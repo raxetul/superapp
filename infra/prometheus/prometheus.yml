@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # SuperApp backend metrics (exposed in P3 — TR-03-007). May be down until the backend runs.
+  - job_name: superapp-backend
+    static_configs:
+      - targets: ["superapp-backend:8080"]

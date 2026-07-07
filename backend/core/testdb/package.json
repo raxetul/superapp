@@ -1,0 +1,14 @@
+{
+  "name": "superapp-testdb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "In-memory PostgreSQL (PGlite WASM) exposed over the Postgres wire protocol for backend tests. No Docker / system Postgres required.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.3",
+    "@electric-sql/pglite-socket": "0.2.6"
+  }
+}
