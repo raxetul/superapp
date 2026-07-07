@@ -8,13 +8,13 @@ The project is organized into three main application directories, each containin
 
 ```
 project/
-├── backend/                 # Backend application (Go)
+├── backend/                 # Backend application (Rust · loco.rs)
 │   ├── core/                # Core backend functionalities
 │   │   ├── src/             # Source code
 │   │   ├── build/           # Build artifacts
 │   │   ├── test/            # Test files
 │   │   ├── README.md        # Core documentation
-│   │   └── [config files]   # Go-specific configurations
+│   │   └── [config files]   # Cargo + loco config (Cargo.toml, config/*.yaml)
 │   └── modules/             # Backend modules (plugins)
 │       └── [module-name]/   # Individual module folders
 │           ├── src/
@@ -64,34 +64,34 @@ project/
 # Core Applications
 
 
-## Backend (Go)
+## Backend (Rust · loco.rs)
 
-**Technology Stack**: Go, PostgreSQL, Redis, Kafka, Prometheus, Grafana, Prometheus Alertmanager
+**Technology Stack**: Rust on the **loco.rs** framework (Axum HTTP + Tokio async runtime + **SeaORM** ORM), PostgreSQL, Redis, Kafka, Prometheus, Grafana, Prometheus Alertmanager
 
 ### Core Features
-- **API Gateway**: Centralized request handling for mobile and frontend clients
-- **Authentication & Authorization**: JWT-based authentication with admin-controlled user management
-  - **No Public Registration**: First user to access system becomes admin automatically
+- **API Gateway**: Centralized request handling for mobile and frontend clients (loco controllers)
+- **Authentication & Authorization**: SSO via **Rauthy** (OIDC IdP) using the `openidconnect` RP crate; policy-based authorization via **Cedar** (`cedar-policy`). loco's built-in JWT auth scaffolding is replaced by this stack.
+  - **No Public Registration**: First user to access system becomes admin automatically (admin bootstrap)
   - **Admin-Only User Creation**: Only admin users can create new user accounts
-  - **Role-based Access Control (RBAC)**: Admin and regular user roles
+  - **Role / policy-based access control**: Admin and regular user roles, enforced by Cedar policies
   - **Admin Role Management**: Admin can promote any user to admin status
-  - **Token Management**: Access/Refresh Token pattern with JWT
+  - **Token Management**: OIDC access/refresh tokens, with rotation on refresh
     - Short-lived access tokens for API requests
     - Long-lived refresh tokens for token renewal
     - Automatic token rotation on refresh
     - Secure refresh token storage with Redis
-  - **API Security**: Protected endpoints with role-based middleware
+  - **API Security**: Protected endpoints with authorization middleware (Cedar)
   - **Service Authentication**: API key authentication for module-to-service communication
-- **Database**: PostgreSQL as primary data store
-- **Dynamic Module Loading**: Secure runtime plugin system
+- **Database**: PostgreSQL as primary data store (via SeaORM entities + migrations)
+- **Dynamic Module Loading**: Secure runtime plugin system (Rust dynamic-loading approach noted under Module Interface Contracts)
 - **Real-time Communication**: HTTP2 SSE for notifications and updates
-- **Queue System**: Asynchronous request processing (available to modules)
+- **Queue System**: Asynchronous request processing via loco background workers / Kafka (available to modules)
 
 ### Security & Best Practices
 - API endpoint documentation and validation
 - Rate limiting implementation
 - Security best practices enforcement
-- Environment-based configuration with `SUPERAPP_BACKEND_` prefix
+- Environment-based configuration with `SUPERAPP_BACKEND_` prefix (layered over loco `config/*.yaml`)
 
 ### Deployment
 - Dockerized with multi-stage build
@@ -151,18 +151,31 @@ project/
     "metadata": { /* optional request metadata */ }
   }
   ```
-- **Response Structure**:
+- **Success Response Structure** (house envelope, `application/json`):
   ```json
   {
-    "success": boolean,
+    "success": true,
     "data": { /* response payload */ },
     "message": "string",
-    "errors": ["array of error messages"],
-    "pagination": { /* for paginated responses */ }
+    "pagination": { /* only for paginated responses */ }
   }
   ```
+- **Error Response Structure** — **RFC 9457 Problem Details** (`Content-Type: application/problem+json`). The house envelope is **not** used for errors:
+  ```json
+  {
+    "type": "https://superapp/errors/validation",
+    "title": "Unprocessable Entity",
+    "status": 422,
+    "detail": "human-readable explanation specific to this occurrence",
+    "instance": "/api/v1/users",
+    "errors": [ { "pointer": "/email", "detail": "must be a valid email" } ]
+  }
+  ```
+  - `type` is a URI identifying the problem class (defaults to `about:blank` when none applies); `title` is a stable human-readable summary of the `type`; `status` mirrors the HTTP status code; `detail`/`instance` are occurrence-specific.
+  - `errors` is an RFC 9457 **extension member** carrying field-level validation failures (one entry per invalid field; `pointer` is a JSON Pointer into the request body). Extension members are permitted by the RFC.
 
 ### Error Handling Patterns
+- **Error body format**: every non-2xx response is an **RFC 9457 Problem Details** document served as `application/problem+json` (see *Error Response Structure* above). Success responses use the house envelope; errors never do.
 - **HTTP Status Codes**:
   - `200 OK`: Successful requests
   - `201 Created`: Successful resource creation
@@ -235,18 +248,26 @@ project/
 
 ## Module Interface Contracts
 
-### Required Module Exports (Backend)
-```go
-type Module interface {
-    Name() string
-    Version() string
-    Initialize(config Config) error
-    Shutdown() error
-    Routes() []Route
-    Permissions() []Permission
-    HealthCheck() error
+### Required Module Contract (Backend)
+Backend modules run as **out-of-process containers**; the core is a **gateway** that proxies to them. A module container exposes a service contract (HTTP/gRPC) built with the `superapp_module` SDK — it is *not* loaded in-process. Modules may be written in any language that fulfills the contract.
+```rust
+// The module container's entrypoint: build a module service with the SDK and serve it.
+#[tokio::main]
+async fn main() -> Result<(), ModuleError> {
+    Module::builder()
+        .name("my-module")
+        .version("1.0.0")
+        .permissions(["my-module:read"])            // registered as Cedar actions, enforced at the gateway
+        .config_schema(include_str!("config.schema.json"))
+        .route(Method::GET, "/my-module/items", list_items)  // proxied by the core gateway
+        .on_init(|cfg| async move { /* setup */ Ok(()) })
+        .on_shutdown(|| async move { /* cleanup */ Ok(()) })
+        .health(|| async move { Health::Ok })        // GET /health, polled by the gateway
+        .serve()                                     // listens on the module port; core proxies here
+        .await
 }
 ```
+The SDK exposes a standard control surface the gateway relies on: `GET /health` (readiness/liveness), the declared routes (proxied), and a manifest (name/version/routes/permissions/config_schema, plus signatures).
 
 ### Required Module Exports (Frontend)
 ```javascript
@@ -274,11 +295,12 @@ export default {
 }
 ```
 
-### Module Lifecycle Hooks
-- **Load**: `initialize(config)` - Setup module with configuration
-- **Unload**: `shutdown()` or `cleanup()` - Clean up resources
-- **Health**: `healthCheck()` - Verify module status
-- **Update**: Hot-reload capability for development
+### Module Lifecycle (container)
+- **Start**: the core launches the module container; the module runs `on_init(config)` and reports readiness
+- **Ready**: the gateway proxies routes only after the container passes readiness
+- **Stop**: the core stops the container; the module runs `on_shutdown` for cleanup
+- **Health**: the gateway polls the container's `GET /health`; an unhealthy/crashed container is isolated without affecting the core (TR-05-008)
+- *(Frontend/mobile modules remain in-process JS bundles loaded by their module hosts — `initialize`/`cleanup` hooks apply there.)*
 
 ### Configuration Interface
 - **Schema Validation**: JSON Schema for module configuration
@@ -287,68 +309,69 @@ export default {
 
 # Development Standards & Conventions
 
-## Go Backend Standards
+## Rust Backend Standards (loco.rs)
 
-### Package Structure
-- **Main Package**: `cmd/` for application entry points
-- **Internal Packages**: `internal/` for private application code
-- **Shared Packages**: `pkg/` for reusable library code
-- **Package Naming**: Short, lowercase, single word (e.g., `auth`, `user`, `config`)
+### Crate & Module Structure
+- **Binary entry point**: `src/main.rs` + `src/app.rs` (loco `Hooks` impl wires the app)
+- **Controllers**: `src/controllers/` — HTTP handlers (Axum), one module per resource
+- **Models**: `src/models/` with SeaORM entities under `src/models/_entities/` (generated)
+- **Migrations**: `migration/` sub-crate (SeaORM migrations)
+- **Background work**: `src/workers/` (loco workers), `src/tasks/` (one-off tasks), `src/mailers/`
+- **Shared library code**: `src/lib.rs` exposing reusable modules; cross-crate helpers live in a workspace crate
+- **Module naming**: short, snake_case modules (e.g., `auth`, `user`, `config`)
 
 ### File Organization
 ```
-backend/core/src/
-├── cmd/
-│   └── server/
-│       └── main.go
-├── internal/
-│   ├── auth/          # Authentication logic
-│   ├── user/          # User management
-│   ├── module/        # Module system
-│   ├── api/           # HTTP handlers
-│   ├── middleware/    # HTTP middleware
-│   ├── config/        # Configuration
-│   └── database/      # Database operations
-└── pkg/
-    ├── logger/        # Logging utilities
-    ├── validator/     # Validation helpers
-    └── response/      # Response formatters
+backend/core/
+├── src/
+│   ├── main.rs              # Binary entry point
+│   ├── app.rs               # loco App Hooks (routes, workers, boot)
+│   ├── controllers/         # HTTP handlers (auth, user, module, ...)
+│   ├── models/
+│   │   └── _entities/       # SeaORM entities (generated)
+│   ├── middleware/          # Tower/Axum middleware (authz, etc.)
+│   ├── workers/             # Background workers
+│   ├── tasks/               # CLI tasks (seed, maintenance)
+│   ├── initializers/        # Custom boot initializers
+│   └── common/              # Logging, validation, response helpers
+├── migration/               # SeaORM migration crate
+├── config/                  # loco config (development.yaml, production.yaml, test.yaml)
+├── tests/                   # Integration tests
+└── Cargo.toml
 ```
 
 ### Naming Conventions
-- **Files**: Snake_case (e.g., `user_handler.go`, `auth_middleware.go`)
-- **Types**: PascalCase (e.g., `UserService`, `AuthConfig`)
-- **Functions**: PascalCase for exported, camelCase for private
-- **Variables**: camelCase (e.g., `userID`, `configPath`)
-- **Constants**: UPPER_SNAKE_CASE (e.g., `DEFAULT_PORT`, `JWT_SECRET_KEY`)
+- **Files / modules**: snake_case (e.g., `user_controller.rs`, `auth_middleware.rs`)
+- **Types / traits / enums**: PascalCase (e.g., `UserService`, `AuthConfig`)
+- **Functions / methods / variables**: snake_case (e.g., `user_id`, `config_path`)
+- **Constants / statics**: SCREAMING_SNAKE_CASE (e.g., `DEFAULT_PORT`, `JWT_SECRET_KEY`)
+- **Visibility**: `pub` only what must cross module boundaries; default to private
 
 ### Error Handling Patterns
-```go
-// Custom error types
-type UserError struct {
-    Code    string `json:"code"`
-    Message string `json:"message"`
-    Field   string `json:"field,omitempty"`
+```rust
+// Domain error type with thiserror
+#[derive(Debug, thiserror::Error)]
+pub enum UserError {
+    #[error("validation failed on {field}: {message}")]
+    Validation { field: String, message: String },
+    #[error(transparent)]
+    Db(#[from] sea_orm::DbErr),
 }
 
-// Error wrapping
-if err != nil {
-    return fmt.Errorf("failed to create user: %w", err)
-}
-
-// HTTP error responses
-func HandleError(c *gin.Context, err error) {
-    // Structured error handling logic
+// Propagate with `?`; convert into loco's Error at the controller boundary
+async fn create_user(/* ... */) -> Result<Response, loco_rs::Error> {
+    let user = service.create(payload).await?; // UserError -> loco Error via From
+    format::json(user)
 }
 ```
 
 ### Testing Conventions
-- **Test Files**: `*_test.go` in same package
-- **Test Functions**: `TestFunctionName(t *testing.T)`
-- **Benchmark Tests**: `BenchmarkFunctionName(b *testing.B)`
-- **Table Tests**: Use subtests with `t.Run()`
-- **Mocking**: Use interfaces for dependency injection
-- **Coverage**: Minimum 80% code coverage for critical paths
+- **Unit tests**: `#[cfg(test)] mod tests` in the same file; `#[test]` / `#[tokio::test]` for async
+- **Integration tests**: under `tests/`, using loco's test helpers (`boot_test`, `request`)
+- **Snapshots**: `insta` for response/serialization snapshots where useful
+- **Fixtures / seeding**: loco fixtures + `serial_test` for DB-touching tests
+- **Mocking**: depend on traits; inject fakes for external services
+- **Coverage**: minimum 80% on critical paths (e.g., `cargo llvm-cov`)
 
 ## React Frontend Standards
 
@@ -508,7 +531,7 @@ const styles = StyleSheet.create({
 - **README Files**: Include purpose, setup, usage, and contribution guidelines
 - **Code Comments**: Explain "why" not "what"
 - **API Documentation**: Use OpenAPI/Swagger for backend APIs
-- **Inline Documentation**: JSDoc for functions, GoDoc for Go packages
+- **Inline Documentation**: JSDoc for JS/TS functions, rustdoc (`///`) for Rust items
 
 ### Git Commit Conventions
 - **Format**: `type(scope): description`
@@ -525,34 +548,34 @@ const styles = StyleSheet.create({
 - **Modules**: `SUPERAPP_MODULE_{NAME}_*` (e.g., `SUPERAPP_MODULE_AUTH_SECRET`)
 
 ### Code Formatting
-- **Go**: `gofmt` and `goimports` for automatic formatting
+- **Rust**: `cargo fmt` (rustfmt) for formatting, `cargo clippy` (deny warnings) for linting
 - **TypeScript/JavaScript**: Prettier with consistent configuration
 - **Line Length**: Maximum 100 characters
-- **Indentation**: 2 spaces for JS/TS, tabs for Go
+- **Indentation**: 2 spaces for JS/TS, 4 spaces for Rust (rustfmt default)
 - **Trailing Commas**: Always in multi-line structures
 
 # Development Workflow
 
 ## Build Commands
 
-### Backend (Go)
+### Backend (Rust · loco.rs)
 ```bash
 # Development
 cd backend/core
-go mod tidy                    # Install dependencies
-go run cmd/server/main.go      # Run development server
-go build -o bin/server cmd/server/main.go  # Build binary
+cargo fetch                    # Fetch dependencies
+cargo loco start               # Run development server
+cargo build                    # Build binary
 
-# With hot reload (using air)
-air                           # Auto-reload on file changes
+# With hot reload (cargo-watch)
+cargo watch -x "loco start"   # Auto-reload on file changes
 
 # Production build
-go build -ldflags="-s -w" -o bin/server cmd/server/main.go
+cargo build --release          # Optimized binary at target/release/
 
-# Module development
+# Module development (module = a containerized service)
 cd backend/modules/[module-name]
-go mod tidy
-go build -buildmode=plugin -o [module-name].so src/main.go
+cargo run                      # run the module service locally
+docker build -t [module-name] . # build the module's OCI image (see Module Interface Contracts)
 ```
 
 ### Frontend (React)
@@ -603,21 +626,16 @@ npm run build
 
 ### Backend Testing
 ```bash
-# Unit tests
-go test ./...                 # Run all tests
-go test -v ./internal/auth    # Run specific package tests
-go test -cover ./...          # Run with coverage
-go test -race ./...           # Run with race detection
+# Unit + integration tests
+cargo test                    # Run all tests
+cargo test auth::             # Run a specific module's tests
+cargo test --test integration # Run an integration test target
 
-# Integration tests
-go test -tags=integration ./... # Run integration tests
+# Benchmarks (criterion)
+cargo bench
 
-# Benchmark tests
-go test -bench=. ./...        # Run benchmarks
-
-# Test coverage report
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out -o coverage.html
+# Coverage report
+cargo llvm-cov --html         # HTML coverage report
 ```
 
 ### Frontend Testing
@@ -666,10 +684,12 @@ npm run test:modules
 ### Prerequisites
 ```bash
 # Required tools
-go version          # Go 1.21+
-node --version      # Node.js 18+
-npm --version       # npm 9+
-docker --version    # Docker 24+
+rustc --version      # Rust 1.75+ (stable)
+cargo --version      # Cargo
+cargo loco --version # loco-cli (cargo install loco-cli)
+node --version       # Node.js 18+
+npm --version        # npm 9+
+docker --version     # Docker 24+
 
 # Mobile development
 npx expo --version  # Expo CLI
@@ -698,8 +718,7 @@ cp .env.example .env.local
 # Backend setup
 cd backend/core
 cp .env.example .env
-go mod download
-go run cmd/server/main.go
+cargo loco start
 
 # Frontend setup (new terminal)
 cd frontend/core
@@ -714,18 +733,11 @@ npx expo start
 
 ### Hot Reload Configuration
 
-**Backend (using Air)**:
-```yaml
-# .air.toml
-root = "."
-tmp_dir = "tmp"
-
-[build]
-  cmd = "go build -o ./tmp/main ./cmd/server"
-  bin = "tmp/main"
-  full_bin = "./tmp/main"
-  include_ext = ["go", "tpl", "tmpl", "html"]
-  exclude_dir = ["assets", "tmp", "vendor", "node_modules"]
+**Backend (cargo-watch)**:
+```bash
+# Install once: cargo install cargo-watch
+# Rebuild + restart the loco server on source changes
+cargo watch -w src -w config -x "loco start"
 ```
 
 **Frontend (Vite)**:
@@ -760,12 +772,15 @@ module.exports = {
 ```bash
 # Using helvetia-compose infrastructure
 # Database will be available at connection details provided
-# Run migrations
+# Run migrations (SeaORM via loco)
 cd backend/core
-go run cmd/migrate/main.go up
+cargo loco db migrate
+
+# Generate entities from the schema (after migrations)
+cargo loco db entities
 
 # Seed initial data
-go run cmd/seed/main.go
+cargo loco task seed
 
 # Create first admin user (automatic on first access)
 # First user to access the system becomes admin
@@ -778,11 +793,11 @@ go run cmd/seed/main.go
 **1. Generate Module Structure**
 ```bash
 # Backend module
-mkdir -p backend/modules/[module-name]/{src,build,test}
+mkdir -p backend/modules/[module-name]/{src,tests}
 cd backend/modules/[module-name]
 
-# Initialize Go module
-go mod init superapp/modules/[module-name]
+# Initialize a Cargo binary crate (the module service) + a Dockerfile
+cargo init --bin --name superapp_module_[module-name]
 
 # Frontend module
 mkdir -p frontend/modules/[module-name]/{src,build,test}
@@ -797,48 +812,41 @@ npm init -y
 
 **2. Module Template Structure**
 ```bash
-# Backend module structure
+# Backend module structure (a containerized service)
 backend/modules/[module-name]/
 ├── src/
-│   ├── main.go          # Module entry point
-│   ├── handlers/        # HTTP handlers
+│   ├── main.rs          # Service entry point (builds + serves the module via the SDK)
+│   ├── controllers/     # HTTP/gRPC handlers
 │   ├── services/        # Business logic
-│   ├── models/          # Data models
-│   └── config/          # Module configuration
-├── test/
-│   └── *_test.go
-├── go.mod
-├── go.sum
+│   ├── models/          # SeaORM entities / data models
+│   └── config.rs        # Module configuration
+├── tests/
+│   └── integration.rs
+├── Dockerfile           # builds the module's OCI image
+├── Cargo.toml
 └── README.md
 ```
 
 **3. Module Implementation Requirements**
 
-**Backend Module Interface**:
-```go
-// src/main.go
-package main
+**Backend Module Interface** (the container's entrypoint — built with the SDK, served over HTTP/gRPC; no in-process linking):
+```rust
+// src/main.rs
+use superapp_module::{Health, Method, Module, ModuleError};
 
-import "superapp/pkg/module"
-
-type MyModule struct {}
-
-func (m *MyModule) Name() string { return "my-module" }
-func (m *MyModule) Version() string { return "1.0.0" }
-
-func (m *MyModule) Initialize(config module.Config) error {
-    // Module initialization logic
-    return nil
+#[tokio::main]
+async fn main() -> Result<(), ModuleError> {
+    Module::builder()
+        .name("my-module")
+        .version("1.0.0")
+        .permissions(["my-module:read"])              // Cedar actions, enforced at the gateway
+        .route(Method::GET, "/my-module/items", list_items)
+        .on_init(|_cfg| async move { Ok(()) })
+        .on_shutdown(|| async move { Ok(()) })
+        .health(|| async move { Health::Ok })
+        .serve()                                       // listens on the module port; core proxies here
+        .await
 }
-
-func (m *MyModule) Routes() []module.Route {
-    return []module.Route{
-        {Method: "GET", Path: "/my-module/health", Handler: m.HealthCheck},
-    }
-}
-
-// Export for plugin loading
-var Module MyModule
 ```
 
 **Frontend Module Interface**:
@@ -880,7 +888,7 @@ export default MyModule;
 cd [platform]/modules/[module-name]
 
 # Backend
-go test ./...
+cargo test
 
 # Frontend/Mobile
 npm test
@@ -892,9 +900,10 @@ cd [platform]/core
 
 ### Module Deployment
 ```bash
-# Backend module build
+# Backend module build (OCI image, pushed to the private registry)
 cd backend/modules/[module-name]
-go build -buildmode=plugin -o [module-name].so src/main.go
+docker build -t <private-registry>/[module-name]:1.0.0 .
+docker push <private-registry>/[module-name]:1.0.0   # core resolves/runs it as a container
 
 # Frontend module build
 cd frontend/modules/[module-name]
