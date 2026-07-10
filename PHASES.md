@@ -9,7 +9,7 @@ This file drives the bottom tmux phase strip (see `~/.claude/scripts/agentic-pha
 - [x] Project definition & engineering standards (`project.md`)
 - [x] Infrastructure & local env (helvetia-compose wiring, `.env` scaffolding)
 - [x] Backend core bootstrap (loco.rs scaffold, config, SeaORM/DB, logging, response/validator)
-- [ ] Authentication, SSO & policy-based AuthZ (Rauthy IdP broker over OIDC via `openidconnect` RP, JWT access/refresh rotation, Cedar `cedar-policy` rule-based authorization, admin bootstrap, middleware)
+- [x] Authentication, SSO & policy-based AuthZ (Rauthy IdP broker over OIDC via `openidconnect` RP, JWT access/refresh rotation, Cedar `cedar-policy` rule-based authorization, admin bootstrap, middleware)
 - [ ] Dynamic module loading system (plugin loader, `/modules/register`, health checks)
 - [ ] Real-time & messaging (HTTP2 SSE event stream, Kafka topics & consumers)
 - [ ] Frontend core (React + ShadCN, auth flows, role-based routing, module host)

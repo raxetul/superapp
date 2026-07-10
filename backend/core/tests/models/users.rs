@@ -1,12 +1,12 @@
 use chrono::{offset::Local, Duration};
-use superapp_core::{
-    app::App,
-    models::users::{self, Model, RegisterParams},
-};
 use insta::assert_debug_snapshot;
 use loco_rs::testing::prelude::*;
 use sea_orm::{ActiveModelTrait, ActiveValue, IntoActiveModel};
 use serial_test::serial;
+use superapp_core::{
+    app::App,
+    models::users::{self, Model, RegisterParams},
+};
 
 macro_rules! configure_insta {
     ($($expr:expr),*) => {

@@ -152,10 +152,7 @@ impl Problem {
     pub fn new(status: StatusCode) -> Self {
         Self {
             type_: "about:blank".to_string(),
-            title: status
-                .canonical_reason()
-                .unwrap_or("Unknown")
-                .to_string(),
+            title: status.canonical_reason().unwrap_or("Unknown").to_string(),
             status: status.as_u16(),
             detail: None,
             instance: None,
@@ -212,12 +209,7 @@ impl IntoResponse for Problem {
         let body = serde_json::to_vec(&self).unwrap_or_else(|_| {
             br#"{"type":"about:blank","title":"Internal Server Error","status":500}"#.to_vec()
         });
-        (
-            status,
-            [(header::CONTENT_TYPE, PROBLEM_JSON)],
-            body,
-        )
-            .into_response()
+        (status, [(header::CONTENT_TYPE, PROBLEM_JSON)], body).into_response()
     }
 }
 
@@ -306,7 +298,13 @@ mod tests {
 
     #[test]
     fn problem_title_defaults_to_canonical_reason() {
-        assert_eq!(Problem::new(StatusCode::UNPROCESSABLE_ENTITY).title, "Unprocessable Entity");
-        assert_eq!(Problem::new(StatusCode::SERVICE_UNAVAILABLE).title, "Service Unavailable");
+        assert_eq!(
+            Problem::new(StatusCode::UNPROCESSABLE_ENTITY).title,
+            "Unprocessable Entity"
+        );
+        assert_eq!(
+            Problem::new(StatusCode::SERVICE_UNAVAILABLE).title,
+            "Service Unavailable"
+        );
     }
 }

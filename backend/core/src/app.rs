@@ -42,14 +42,19 @@ impl Hooks for App {
     }
 
     async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
-        Ok(vec![Box::new(
-            crate::initializers::metrics::MetricsInitializer,
-        )])
+        Ok(vec![
+            Box::new(crate::initializers::metrics::MetricsInitializer),
+            Box::new(crate::initializers::auth::AuthInitializer),
+        ])
     }
 
     fn routes(_ctx: &AppContext) -> AppRoutes {
-        AppRoutes::with_default_routes() // controller routes below
+        // loco's native auth (`/api/auth/*`) is intentionally NOT registered:
+        // Rauthy is the sole authentication authority (TR-04-002). Our own
+        // Rauthy-backed auth routes live under `/api/v1/auth`.
+        AppRoutes::with_default_routes()
             .add_route(controllers::auth::routes())
+            .add_route(controllers::admin::routes())
             .add_route(controllers::meta::routes())
             .add_route(controllers::system::routes())
     }

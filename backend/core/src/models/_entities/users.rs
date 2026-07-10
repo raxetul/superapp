@@ -17,6 +17,9 @@ pub struct Model {
     #[sea_orm(unique)]
     pub api_key: String,
     pub name: String,
+    /// Coarse principal role fed to Cedar: `admin` or the least-privilege
+    /// `user`. Defaults to `user` at the DB level (P4 / TR-04-004).
+    pub role: String,
     pub reset_token: Option<String>,
     pub reset_sent_at: Option<DateTimeWithTimeZone>,
     pub email_verification_token: Option<String>,

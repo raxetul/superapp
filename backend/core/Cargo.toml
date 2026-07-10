@@ -4,6 +4,10 @@
 name = "core"
 version = "0.1.0"
 edition = "2021"
+# Dev toolchain is rustc 1.85 (source tarball, no rustup). Declaring the MSRV
+# makes the resolver reject deps that need a newer compiler (see the P4 pins
+# for cedar-policy 4.0.1, the last release supporting 1.85).
+rust-version = "1.85"
 publish = false
 default-run = "core-cli"
 
@@ -42,6 +46,25 @@ chrono = { version = "0.4" }
 validator = { version = "0.20" }
 uuid = { version = "1.6", features = ["v4"] }
 include_dir = { version = "0.7" }
+
+# --- P4: Authentication, SSO & policy-based AuthZ ---
+# OIDC RP (Rauthy), JWT/JWKS validation, Redis refresh store, Cedar authz.
+jsonwebtoken = { version = "9" }
+redis = { version = "0.31", default-features = false, features = [
+  "tokio-comp",
+  "connection-manager",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+openidconnect = { version = "3" }
+# 4.0.1 is the last cedar-policy release with MSRV <= 1.85 (4.1+ needs 1.89).
+cedar-policy = { version = "=4.0.1" }
+rand = { version = "0.8" }
+base64 = { version = "0.22" }
+sha2 = { version = "0.10" }
+thiserror = { version = "1" }
 
 [[bin]]
 name = "core-cli"

@@ -39,7 +39,10 @@ async fn ping_returns_200_success_envelope_with_request_id_header() {
 async fn echo_rejects_invalid_body_with_rfc9457_problem() {
     request::<App, _, _>(|request, _ctx| async move {
         // Empty message violates the `min = 1` rule.
-        let res = request.post("/api/v1/echo").json(&json!({ "message": "" })).await;
+        let res = request
+            .post("/api/v1/echo")
+            .json(&json!({ "message": "" }))
+            .await;
 
         // TR-03-004: validation failure → 422 as application/problem+json.
         assert_eq!(res.status_code(), 422);

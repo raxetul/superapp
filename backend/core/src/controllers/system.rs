@@ -65,9 +65,7 @@ pub async fn ready(State(ctx): State<AppContext>) -> Response {
         .detail(format!("unreachable dependencies: {}", down.join(", ")));
     // RFC 9457 extension member with the full per-dependency breakdown.
     if let Ok(value) = serde_json::to_value(&statuses) {
-        problem
-            .extensions
-            .insert("dependencies".to_string(), value);
+        problem.extensions.insert("dependencies".to_string(), value);
     }
     problem.into_response()
 }

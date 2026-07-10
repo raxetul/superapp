@@ -6,6 +6,7 @@ use serde_json::Map;
 use uuid::Uuid;
 
 pub use super::_entities::users::{self, ActiveModel, Entity, Model};
+use crate::models::role::Role;
 
 pub const MAGIC_LINK_LENGTH: i8 = 32;
 pub const MAGIC_LINK_EXPIRATION_MIN: i8 = 5;
@@ -201,6 +202,24 @@ impl Model {
             .one(db)
             .await?;
         user.ok_or_else(|| ModelError::EntityNotFound)
+    }
+
+    /// The user's typed authorization [`Role`] (parsed from the stored
+    /// string; unknown values degrade to the least-privilege role).
+    #[must_use]
+    pub fn role(&self) -> Role {
+        Role::from_stored(&self.role)
+    }
+
+    /// Set a user's role by email (admin management, TR-04-003 role changes).
+    ///
+    /// # Errors
+    /// [`ModelError::EntityNotFound`] if no such user; other variants on DB error.
+    pub async fn set_role(db: &DatabaseConnection, email: &str, role: Role) -> ModelResult<Model> {
+        let user = Self::find_by_email(db, email).await?;
+        let mut active = user.into_active_model();
+        active.role = ActiveValue::set(role.as_str().to_string());
+        Ok(active.update(db).await?)
     }
 
     /// Verifies whether the provided plain password matches the hashed password

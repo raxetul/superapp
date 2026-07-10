@@ -1,0 +1,32 @@
+// Cedar schema for SuperApp core authorization (TR-04-006).
+//
+// Principals are `User`s that belong to `Role` groups (`admin` / `user`).
+// Resources grow over time (modules register their own actions/resources in
+// P5); this baseline covers admin access, per-module invocation, and a user's
+// own profile.
+
+entity Role;
+
+entity User in [Role] {
+  email: String,
+  role: String,
+};
+
+entity AdminPanel;
+
+entity Module;
+
+action "admin.access" appliesTo {
+  principal: [User],
+  resource: [AdminPanel],
+};
+
+action "module.invoke" appliesTo {
+  principal: [User],
+  resource: [Module],
+};
+
+action "profile.read" appliesTo {
+  principal: [User],
+  resource: [User],
+};

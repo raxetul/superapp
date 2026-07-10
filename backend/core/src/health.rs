@@ -75,7 +75,9 @@ pub async fn probe_tcp(name: &str, addr: &str, timeout: Duration) -> DepStatus {
     match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
         Ok(Ok(_stream)) => DepStatus::up(name),
         Ok(Err(err)) => DepStatus::down(name, err.to_string()),
-        Err(_elapsed) => DepStatus::down(name, format!("timed out after {}ms", timeout.as_millis())),
+        Err(_elapsed) => {
+            DepStatus::down(name, format!("timed out after {}ms", timeout.as_millis()))
+        }
     }
 }
 

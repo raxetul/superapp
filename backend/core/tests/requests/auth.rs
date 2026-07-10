@@ -1,502 +1,153 @@
-use superapp_core::{app::App, models::users};
-use insta::{assert_debug_snapshot, with_settings};
+//! Request-level tests for the P4 auth surface.
+//!
+//! - TR-04-002: a protected route (`/api/v1/auth/me`) returns `401` without a
+//!   valid bearer token and `2xx` with one; loco's native auth endpoints are
+//!   no longer exposed.
+//! - TR-04-005: the admin routes are Cedar-gated — a regular user is denied
+//!   `403`, an admin is allowed.
+//! - FR-07-004 support: `/api/v1/auth/capabilities` reports the toggles.
+
 use loco_rs::testing::prelude::*;
-use rstest::rstest;
+use sea_orm::{ActiveModelTrait, ActiveValue};
+use serde_json::{json, Value};
 use serial_test::serial;
+use superapp_core::{app::App, models::_entities::users};
 
-use super::prepare_data;
+use crate::support;
 
-// TODO: see how to dedup / extract this to app-local test utils
-// not to framework, because that would require a runtime dep on insta
-macro_rules! configure_insta {
-    ($($expr:expr),*) => {
-        let mut settings = insta::Settings::clone_current();
-        settings.set_prepend_module_to_snapshot(false);
-        settings.set_snapshot_suffix("auth_request");
-        let _guard = settings.bind_to_scope();
-    };
+/// Insert a user directly (bypassing OIDC) so protected routes can resolve it.
+async fn seed_user(db: &sea_orm::DatabaseConnection, email: &str, role: &str) {
+    users::ActiveModel {
+        email: ActiveValue::set(email.to_string()),
+        name: ActiveValue::set(email.split('@').next().unwrap().to_string()),
+        password: ActiveValue::set("!oidc!".to_string()),
+        role: ActiveValue::set(role.to_string()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 #[serial]
-async fn can_register() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, ctx| async move {
-        let email = "test@loco.com";
-        let payload = serde_json::json!({
-            "name": "loco",
-            "email": email,
-            "password": "12341234"
-        });
-
-        let response = request.post("/api/auth/register").json(&payload).await;
-        assert_eq!(
-            response.status_code(),
-            200,
-            "Register request should succeed"
-        );
-        let saved_user = users::Model::find_by_email(&ctx.db, email).await;
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!(saved_user);
-        });
-
-        let deliveries = ctx.mailer.unwrap().deliveries();
-        assert_eq!(deliveries.count, 1, "Exactly one email should be sent");
-
-        // with_settings!({
-        //     filters => cleanup_email()
-        // }, {
-        //     assert_debug_snapshot!(ctx.mailer.unwrap().deliveries());
-        // });
+async fn capabilities_are_public_and_report_toggles() {
+    request::<App, _, _>(|request, _ctx| async move {
+        let res = request.get("/api/v1/auth/capabilities").await;
+        assert_eq!(res.status_code(), 200);
+        let body: Value = res.json();
+        assert_eq!(body["success"], json!(true));
+        // Test profile: toggle off, no OIDC configured.
+        assert_eq!(body["data"]["self_registration_enabled"], json!(false));
+        assert_eq!(body["data"]["oidc_configured"], json!(false));
     })
     .await;
 }
 
-#[rstest]
-#[case("login_with_valid_password", "12341234")]
-#[case("login_with_invalid_password", "invalid-password")]
 #[tokio::test]
 #[serial]
-async fn can_login_with_verify(#[case] test_name: &str, #[case] password: &str) {
-    configure_insta!();
-
+async fn native_loco_auth_endpoints_are_not_exposed() {
     request::<App, _, _>(|request, ctx| async move {
-        let email = "test@loco.com";
-        let register_payload = serde_json::json!({
-            "name": "loco",
-            "email": email,
-            "password": "12341234"
-        });
-
-        //Creating a new user
-        let register_response = request
+        // loco's scaffolded register endpoint is no longer wired (TR-04-002):
+        // the route is unhandled (loco's fallback answers, not our JSON auth
+        // controller) and — decisively — it provisions no user.
+        let res = request
             .post("/api/auth/register")
-            .json(&register_payload)
+            .json(&json!({"email":"native@nope.com","password":"p","name":"n"}))
             .await;
-
-        assert_eq!(
-            register_response.status_code(),
-            200,
-            "Register request should succeed"
-        );
-
-        let user = users::Model::find_by_email(&ctx.db, email).await.unwrap();
-        let email_verification_token = user
-            .email_verification_token
-            .expect("Email verification token should be generated");
-        request
-            .get(&format!("/api/auth/verify/{email_verification_token}"))
-            .await;
-
-        //verify user request
-        let response = request
-            .post("/api/auth/login")
-            .json(&serde_json::json!({
-                "email": email,
-                "password": password
-            }))
-            .await;
-
-        // Make sure email_verified_at is set
-        let user = users::Model::find_by_email(&ctx.db, email)
-            .await
-            .expect("Failed to find user by email");
-
-        assert!(
-            user.email_verified_at.is_some(),
-            "Expected the email to be verified, but it was not. User: {:?}",
-            user
-        );
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!(test_name, (response.status_code(), response.text()));
-        });
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn login_with_un_existing_email() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, _ctx| async move {
-      
-        let login_response = request
-            .post("/api/auth/login")
-            .json(&serde_json::json!({
-                "email": "un_existing@loco.rs",
-                "password":  "1234"
-            }))
-            .await;
-
-        assert_eq!(login_response.status_code(), 401, "Login request should return 401");
-        login_response.assert_json(&serde_json::json!({"error": "unauthorized", "description": "You do not have permission to access this resource"}));
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn can_login_without_verify() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, _ctx| async move {
-        let email = "test@loco.com";
-        let password = "12341234";
-        let register_payload = serde_json::json!({
-            "name": "loco",
-            "email": email,
-            "password": password
-        });
-
-        //Creating a new user
-        let register_response = request
-            .post("/api/auth/register")
-            .json(&register_payload)
-            .await;
-
-        assert_eq!(
-            register_response.status_code(),
-            200,
-            "Register request should succeed"
-        );
-
-        //verify user request
-        let login_response = request
-            .post("/api/auth/login")
-            .json(&serde_json::json!({
-                "email": email,
-                "password": password
-            }))
-            .await;
-
-        assert_eq!(
-            login_response.status_code(),
-            200,
-            "Login request should succeed"
-        );
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!(login_response.text());
-        });
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn invalid_verification_token() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, _ctx| async move {
-        let response = request.get("/api/auth/verify/invalid-token").await;
-
-        assert_eq!(response.status_code(), 401, "Verify request should reject");
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn can_reset_password() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, ctx| async move {
-        let login_data = prepare_data::init_user_login(&request, &ctx).await;
-
-        let forgot_payload = serde_json::json!({
-            "email": login_data.user.email,
-        });
-        let forget_response = request.post("/api/auth/forgot").json(&forgot_payload).await;
-        assert_eq!(
-            forget_response.status_code(),
-            200,
-            "Forget request should succeed"
-        );
-
-        let user = users::Model::find_by_email(&ctx.db, &login_data.user.email)
-            .await
-            .expect("Failed to find user by email");
-
-        assert!(
-            user.reset_token.is_some(),
-            "Expected reset_token to be set, but it was None. User: {user:?}"
+        assert_ne!(
+            res.content_type(),
+            "application/json",
+            "native register must not be served by our JSON auth controller"
         );
         assert!(
-            user.reset_sent_at.is_some(),
-            "Expected reset_sent_at to be set, but it was None. User: {user:?}"
+            superapp_core::models::users::Model::find_by_email(&ctx.db, "native@nope.com")
+                .await
+                .is_err(),
+            "native registration must not create a user"
         );
-
-        let new_password = "new-password";
-        let reset_payload = serde_json::json!({
-            "token": user.reset_token,
-            "password": new_password,
-        });
-
-        let reset_response = request.post("/api/auth/reset").json(&reset_payload).await;
-        assert_eq!(
-            reset_response.status_code(),
-            200,
-            "Reset password request should succeed"
-        );
-
-        let user = users::Model::find_by_email(&ctx.db, &user.email)
-            .await
-            .unwrap();
-
-        assert!(user.reset_token.is_none());
-        assert!(user.reset_sent_at.is_none());
-
-        assert_debug_snapshot!(reset_response.text());
-
-        let login_response = request
-            .post("/api/auth/login")
-            .json(&serde_json::json!({
-                "email": user.email,
-                "password": new_password
-            }))
-            .await;
-
-        assert_eq!(
-            login_response.status_code(),
-            200,
-            "Login request should succeed"
-        );
-
-        let deliveries = ctx.mailer.unwrap().deliveries();
-        assert_eq!(deliveries.count, 2, "Exactly one email should be sent");
-        // with_settings!({
-        //     filters => cleanup_email()
-        // }, {
-        //     assert_debug_snapshot!(deliveries.messages);
-        // });
     })
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn can_get_current_user() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, ctx| async move {
-        let user = prepare_data::init_user_login(&request, &ctx).await;
-
-        let (auth_key, auth_value) = prepare_data::auth_header(&user.token);
-        let response = request
-            .get("/api/auth/current")
-            .add_header(auth_key, auth_value)
-            .await;
-
-        assert_eq!(
-            response.status_code(),
-            200,
-            "Current request should succeed"
-        );
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!((response.status_code(), response.text()));
-        });
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn can_auth_with_magic_link() {
-    configure_insta!();
-    request::<App, _, _>(|request, ctx| async move {
-        seed::<App>(&ctx).await.unwrap();
-
-        let payload = serde_json::json!({
-            "email": "user1@example.com",
-        });
-        let response = request.post("/api/auth/magic-link").json(&payload).await;
-        assert_eq!(
-            response.status_code(),
-            200,
-            "Magic link request should succeed"
-        );
-
-        let deliveries = ctx.mailer.unwrap().deliveries();
-        assert_eq!(deliveries.count, 1, "Exactly one email should be sent");
-
-        // let redact_token = format!("[a-zA-Z0-9]{{{}}}", users::MAGIC_LINK_LENGTH);
-        // with_settings!({
-        //      filters => {
-        //          let mut combined_filters = cleanup_email().clone();
-        //         combined_filters.extend(vec![(r"(\\r\\n|=\\r\\n)", ""), (redact_token.as_str(), "[REDACT_TOKEN]") ]);
-        //         combined_filters
-        //     }
-        // }, {
-        //     assert_debug_snapshot!(deliveries.messages);
-        // });
-
-        let user = users::Model::find_by_email(&ctx.db, "user1@example.com")
-            .await
-            .expect("User should be found");
-
-        let magic_link_token = user
-            .magic_link_token
-            .expect("Magic link token should be generated");
-        let magic_link_response = request
-            .get(&format!("/api/auth/magic-link/{magic_link_token}"))
-            .await;
-        assert_eq!(
-            magic_link_response.status_code(),
-            200,
-            "Magic link authentication should succeed"
-        );
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!(magic_link_response.text());
-        });
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn can_reject_invalid_email() {
-    configure_insta!();
+async fn me_returns_401_without_token() {
     request::<App, _, _>(|request, _ctx| async move {
-        let invalid_email = "user1@temp-mail.com";
-        let payload = serde_json::json!({
-            "email": invalid_email,
-        });
-        let response = request.post("/api/auth/magic-link").json(&payload).await;
-        assert_eq!(
-            response.status_code(),
-            400,
-            "Expected request with invalid email '{invalid_email}' to be blocked, but it was allowed."
-        );
+        let res = request.get("/api/v1/auth/me").await;
+        assert_eq!(res.status_code(), 401);
+        assert_eq!(res.content_type(), "application/problem+json");
     })
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn can_reject_invalid_magic_link_token() {
-    configure_insta!();
-    request::<App, _, _>(|request, ctx| async move {
-        seed::<App>(&ctx).await.unwrap();
-
-        let magic_link_response = request.get("/api/auth/magic-link/invalid-token").await;
-        assert_eq!(
-            magic_link_response.status_code(),
-            401,
-            "Magic link authentication should be rejected"
-        );
-    })
-    .await;
-}
-
-#[tokio::test]
-#[serial]
-async fn can_resend_verification_email() {
-    configure_insta!();
-
-    request::<App, _, _>(|request, ctx| async move {
-        let email = "test@loco.com";
-        let payload = serde_json::json!({
-            "name": "loco",
-            "email": email,
-            "password": "12341234"
-        });
-
-        let response = request.post("/api/auth/register").json(&payload).await;
-        assert_eq!(
-            response.status_code(),
-            200,
-            "Register request should succeed"
-        );
-
-        let resend_payload = serde_json::json!({ "email": email });
-
-        let resend_response = request
-            .post("/api/auth/resend-verification-mail")
-            .json(&resend_payload)
+async fn me_returns_401_with_garbage_token() {
+    request::<App, _, _>(|request, _ctx| async move {
+        let res = request
+            .get("/api/v1/auth/me")
+            .add_header("authorization", "Bearer not-a-jwt")
             .await;
-
-        assert_eq!(
-            resend_response.status_code(),
-            200,
-            "Resend verification email should succeed"
-        );
-
-        let deliveries = ctx.mailer.unwrap().deliveries();
-
-        assert_eq!(
-            deliveries.count, 2,
-            "Two emails should have been sent: welcome and re-verification"
-        );
-
-        let user = users::Model::find_by_email(&ctx.db, email)
-            .await
-            .expect("User should exist");
-
-        with_settings!({
-            filters => cleanup_user_model()
-        }, {
-            assert_debug_snapshot!("resend_verification_user", user);
-        });
+        assert_eq!(res.status_code(), 401);
     })
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn cannot_resend_email_if_already_verified() {
-    configure_insta!();
-
+async fn me_returns_200_with_valid_token() {
     request::<App, _, _>(|request, ctx| async move {
-        let email = "verified@loco.com";
-        let payload = serde_json::json!({
-            "name": "verified",
-            "email": email,
-            "password": "12341234"
-        });
-
-        request.post("/api/auth/register").json(&payload).await;
-
-        // Verify user
-        let user = users::Model::find_by_email(&ctx.db, email).await.unwrap();
-        if let Some(token) = user.email_verification_token.clone() {
-            request.get(&format!("/api/auth/verify/{token}")).await;
-        }
-
-        // Try resending verification email
-        let resend_payload = serde_json::json!({ "email": email });
-
-        let resend_response = request
-            .post("/api/auth/resend-verification-mail")
-            .json(&resend_payload)
+        seed_user(&ctx.db, "alice@example.com", "user").await;
+        let res = request
+            .get("/api/v1/auth/me")
+            .add_header("authorization", &support::bearer("alice@example.com"))
             .await;
+        assert_eq!(res.status_code(), 200);
+        let body: Value = res.json();
+        assert_eq!(body["data"]["email"], json!("alice@example.com"));
+        assert_eq!(body["data"]["role"], json!("user"));
+    })
+    .await;
+}
 
-        assert_eq!(
-            resend_response.status_code(),
-            200,
-            "Should return 200 even if already verified"
-        );
+#[tokio::test]
+#[serial]
+async fn admin_route_denies_regular_user_but_allows_admin() {
+    request::<App, _, _>(|request, ctx| async move {
+        seed_user(&ctx.db, "bob@example.com", "user").await;
+        seed_user(&ctx.db, "boss@example.com", "admin").await;
 
-        let deliveries = ctx.mailer.unwrap().deliveries();
-        assert_eq!(
-            deliveries.count, 1,
-            "Only the original welcome email should be sent"
-        );
+        // Regular user → Cedar denies with 403.
+        let denied = request
+            .post("/api/v1/admin/allowlist")
+            .add_header("authorization", &support::bearer("bob@example.com"))
+            .json(&json!({ "email": "newcomer@example.com" }))
+            .await;
+        assert_eq!(denied.status_code(), 403);
+        assert_eq!(denied.content_type(), "application/problem+json");
+
+        // Admin → allowed (200) and the email is now allow-listed.
+        let allowed = request
+            .post("/api/v1/admin/allowlist")
+            .add_header("authorization", &support::bearer("boss@example.com"))
+            .json(&json!({ "email": "newcomer@example.com" }))
+            .await;
+        assert_eq!(allowed.status_code(), 200);
+
+        let list = request
+            .get("/api/v1/admin/allowlist")
+            .add_header("authorization", &support::bearer("boss@example.com"))
+            .await;
+        assert_eq!(list.status_code(), 200);
+        let body: Value = list.json();
+        let emails: Vec<&str> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["email"].as_str().unwrap())
+            .collect();
+        assert!(emails.contains(&"newcomer@example.com"));
     })
     .await;
 }

@@ -97,3 +97,15 @@ settings:
   readiness:
     redis: "{{ get_env(name='SUPERAPP_BACKEND_REDIS_HOST', default='localhost') }}:{{ get_env(name='SUPERAPP_BACKEND_REDIS_PORT', default='6379') }}"
     kafka: "{{ get_env(name='SUPERAPP_BACKEND_KAFKA_HOST', default='localhost') }}:{{ get_env(name='SUPERAPP_BACKEND_KAFKA_PORT', default='9092') }}"
+  # P4 auth: OIDC/Rauthy RP settings, token TTLs, refresh-token Redis store.
+  # OIDC is omitted here unless the issuer is configured; endpoints that need
+  # it fail clearly when absent. Secrets come from env (no secrets committed).
+  auth:
+    oidc:
+      issuer_url: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_ISSUER_URL', default='http://localhost:8080/auth/v1') }}"
+      client_id: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_CLIENT_ID', default='superapp') }}"
+      client_secret: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_CLIENT_SECRET', default='') }}"
+      redirect_url: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_REDIRECT_URL', default='http://localhost:5150/api/v1/auth/callback') }}"
+    access_token_ttl_secs: {{ get_env(name='SUPERAPP_BACKEND_ACCESS_TTL_SECS', default='900') }}
+    refresh_token_ttl_secs: {{ get_env(name='SUPERAPP_BACKEND_REFRESH_TTL_SECS', default='2592000') }}
+    redis_url: "{{ get_env(name='SUPERAPP_BACKEND_REDIS_URL', default='redis://localhost:6379') }}"

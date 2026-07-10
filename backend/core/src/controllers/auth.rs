@@ -1,273 +1,228 @@
-use crate::{
-    mailers::auth::AuthMailer,
-    models::{
-        _entities::users,
-        users::{LoginParams, RegisterParams},
-    },
-    views::auth::{CurrentResponse, LoginResponse},
-};
+//! Authentication endpoints (P4) — Rauthy OIDC, replacing loco's native auth.
+//!
+//! Routes (under `/api/v1/auth`):
+//! - `GET  /capabilities` — public; reports the self-registration toggle and
+//!   whether OIDC is configured (backs the frontend's conditional UI,
+//!   FR-07-004).
+//! - `GET  /login` — begins the authorization-code flow (TR-04-001).
+//! - `POST /callback` — completes login: exchange code → validate token →
+//!   provision → open refresh session (TR-04-001/004/010).
+//! - `POST /refresh` — rotates the session (TR-04-003).
+//! - `POST /logout` — revokes the refresh handle.
+//! - `GET  /me` — the current user (protected; TR-04-002).
+
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::Extension;
 use loco_rs::prelude::*;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use serde_json::json;
+use validator::Validate;
 
-pub static EMAIL_DOMAIN_RE: OnceLock<Regex> = OnceLock::new();
+use crate::auth::extractor::CurrentUser;
+use crate::auth::service::{complete_login, refresh_session, LoginError, SessionTokens};
+use crate::auth::state::AuthState;
+use crate::extractors::ValidatedJson;
+use crate::response::{Problem, Success};
 
-fn get_allow_email_domain_re() -> &'static Regex {
-    EMAIL_DOMAIN_RE.get_or_init(|| {
-        Regex::new(r"@example\.com$|@gmail\.com$").expect("Failed to compile regex")
+/// `GET /auth/capabilities` — public auth capabilities.
+#[derive(Debug, Serialize)]
+pub struct Capabilities {
+    /// Whether self-registration is enabled (TR-04-011).
+    pub self_registration_enabled: bool,
+    /// Whether an OIDC provider (Rauthy) is configured.
+    pub oidc_configured: bool,
+}
+
+async fn capabilities(Extension(state): Extension<Arc<AuthState>>) -> Success<Capabilities> {
+    Success::new(Capabilities {
+        self_registration_enabled: state.self_registration_enabled,
+        oidc_configured: state.oidc_configured,
     })
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ForgotParams {
+/// `GET /auth/login` — begin the authorization-code flow.
+#[derive(Debug, Serialize)]
+pub struct LoginStart {
+    pub authorize_url: String,
+    pub state: String,
+    pub pkce_verifier: String,
+    pub nonce: String,
+}
+
+async fn login(
+    Extension(state): Extension<Arc<AuthState>>,
+) -> Result<Success<LoginStart>, Problem> {
+    let oidc = state.oidc.as_ref().ok_or_else(|| {
+        Problem::new(StatusCode::SERVICE_UNAVAILABLE).detail("OIDC is not configured")
+    })?;
+    let redirect = oidc
+        .authorize_url()
+        .map_err(|e| Problem::new(StatusCode::BAD_GATEWAY).detail(e.to_string()))?;
+    Ok(Success::new(LoginStart {
+        authorize_url: redirect.url,
+        state: redirect.csrf_state,
+        pkce_verifier: redirect.pkce_verifier,
+        nonce: redirect.nonce,
+    }))
+}
+
+/// Body of `POST /auth/callback`.
+#[derive(Debug, Deserialize, Validate)]
+pub struct CallbackParams {
+    #[validate(length(min = 1, message = "authorization code is required"))]
+    pub code: String,
+    #[validate(length(min = 1, message = "pkce_verifier is required"))]
+    pub pkce_verifier: String,
+}
+
+/// The session payload returned on login/refresh.
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub access_token: String,
+    pub refresh_handle: String,
+    pub expires_in_secs: Option<u64>,
     pub email: String,
+    pub role: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ResetParams {
-    pub token: String,
-    pub password: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MagicLinkParams {
-    pub email: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ResendVerificationParams {
-    pub email: String,
-}
-
-/// Register function creates a new user with the given parameters and sends a
-/// welcome email to the user
-#[debug_handler]
-async fn register(
-    State(ctx): State<AppContext>,
-    Json(params): Json<RegisterParams>,
-) -> Result<Response> {
-    let res = users::Model::create_with_password(&ctx.db, &params).await;
-
-    let user = match res {
-        Ok(user) => user,
-        Err(err) => {
-            tracing::info!(
-                message = err.to_string(),
-                user_email = &params.email,
-                "could not register user",
-            );
-            return format::json(());
+impl From<SessionTokens> for SessionResponse {
+    fn from(t: SessionTokens) -> Self {
+        Self {
+            access_token: t.access_token,
+            refresh_handle: t.refresh_handle,
+            expires_in_secs: t.expires_in_secs,
+            email: t.email,
+            role: t.role,
         }
-    };
-
-    let user = user
-        .into_active_model()
-        .set_email_verification_sent(&ctx.db)
-        .await?;
-
-    AuthMailer::send_welcome(&ctx, &user).await?;
-
-    format::json(())
-}
-
-/// Verify register user. if the user not verified his email, he can't login to
-/// the system.
-#[debug_handler]
-async fn verify(State(ctx): State<AppContext>, Path(token): Path<String>) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_verification_token(&ctx.db, &token).await else {
-        return unauthorized("invalid token");
-    };
-
-    if user.email_verified_at.is_some() {
-        tracing::info!(pid = user.pid.to_string(), "user already verified");
-    } else {
-        let active_model = user.into_active_model();
-        let user = active_model.verified(&ctx.db).await?;
-        tracing::info!(pid = user.pid.to_string(), "user verified");
     }
-
-    format::json(())
 }
 
-/// In case the user forgot his password  this endpoints generate a forgot token
-/// and send email to the user. In case the email not found in our DB, we are
-/// returning a valid request for for security reasons (not exposing users DB
-/// list).
-#[debug_handler]
-async fn forgot(
+async fn callback(
     State(ctx): State<AppContext>,
-    Json(params): Json<ForgotParams>,
-) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_email(&ctx.db, &params.email).await else {
-        // we don't want to expose our users email. if the email is invalid we still
-        // returning success to the caller
-        return format::json(());
-    };
-
-    let user = user
-        .into_active_model()
-        .set_forgot_password_sent(&ctx.db)
-        .await?;
-
-    AuthMailer::forgot_password(&ctx, &user).await?;
-
-    format::json(())
+    Extension(state): Extension<Arc<AuthState>>,
+    ValidatedJson(params): ValidatedJson<CallbackParams>,
+) -> Result<Success<SessionResponse>, Problem> {
+    let (oidc, validator) = require_oidc(&state)?;
+    let tokens = complete_login(
+        oidc.as_ref(),
+        validator,
+        state.refresh.as_ref(),
+        &ctx.db,
+        state.self_registration_enabled,
+        &params.code,
+        &params.pkce_verifier,
+    )
+    .await
+    .map_err(login_error_to_problem)?;
+    Ok(Success::new(SessionResponse::from(tokens)).message("logged in"))
 }
 
-/// reset user password by the given parameters
-#[debug_handler]
-async fn reset(State(ctx): State<AppContext>, Json(params): Json<ResetParams>) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_reset_token(&ctx.db, &params.token).await else {
-        // we don't want to expose our users email. if the email is invalid we still
-        // returning success to the caller
-        tracing::info!("reset token not found");
-
-        return format::json(());
-    };
-    user.into_active_model()
-        .reset_password(&ctx.db, &params.password)
-        .await?;
-
-    format::json(())
+/// Body of `POST /auth/refresh` and `POST /auth/logout`.
+#[derive(Debug, Deserialize, Validate)]
+pub struct RefreshParams {
+    #[validate(length(min = 1, message = "refresh_handle is required"))]
+    pub refresh_handle: String,
 }
 
-/// Creates a user login and returns a token
-#[debug_handler]
-async fn login(State(ctx): State<AppContext>, Json(params): Json<LoginParams>) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_email(&ctx.db, &params.email).await else {
-        tracing::debug!(
-            email = params.email,
-            "login attempt with non-existent email"
-        );
-        return unauthorized("Invalid credentials!");
-    };
+async fn refresh(
+    State(ctx): State<AppContext>,
+    Extension(state): Extension<Arc<AuthState>>,
+    ValidatedJson(params): ValidatedJson<RefreshParams>,
+) -> Result<Success<SessionResponse>, Problem> {
+    let (oidc, validator) = require_oidc(&state)?;
+    let tokens = refresh_session(
+        oidc.as_ref(),
+        validator,
+        state.refresh.as_ref(),
+        &ctx.db,
+        &params.refresh_handle,
+    )
+    .await
+    .map_err(login_error_to_problem)?;
+    Ok(Success::new(SessionResponse::from(tokens)).message("refreshed"))
+}
 
-    let valid = user.verify_password(&params.password);
+async fn logout(
+    Extension(state): Extension<Arc<AuthState>>,
+    ValidatedJson(params): ValidatedJson<RefreshParams>,
+) -> Result<Success<serde_json::Value>, Problem> {
+    state
+        .refresh
+        .revoke(&params.refresh_handle)
+        .await
+        .map_err(|e| Problem::new(StatusCode::INTERNAL_SERVER_ERROR).detail(e.to_string()))?;
+    Ok(Success::new(json!({ "revoked": true })).message("logged out"))
+}
 
-    if !valid {
-        return unauthorized("unauthorized!");
+/// `GET /auth/me` — the current authenticated user (protected route).
+async fn me(current: CurrentUser) -> Success<serde_json::Value> {
+    Success::new(json!({
+        "pid": current.user.pid,
+        "email": current.user.email,
+        "name": current.user.name,
+        "role": current.user.role().as_str(),
+    }))
+}
+
+/// Require both an OIDC provider and a token validator to be wired.
+#[allow(clippy::type_complexity)]
+fn require_oidc(
+    state: &Arc<AuthState>,
+) -> Result<
+    (
+        Arc<dyn crate::auth::oidc::OidcProvider>,
+        &crate::auth::token::TokenValidator,
+    ),
+    Problem,
+> {
+    let oidc = state.oidc.clone().ok_or_else(|| {
+        Problem::new(StatusCode::SERVICE_UNAVAILABLE).detail("OIDC is not configured")
+    })?;
+    let validator = state.validator.as_deref().ok_or_else(|| {
+        Problem::new(StatusCode::SERVICE_UNAVAILABLE).detail("token validation is not configured")
+    })?;
+    Ok((oidc, validator))
+}
+
+/// Map a [`LoginError`] to an RFC 9457 problem with the right status.
+fn login_error_to_problem(e: LoginError) -> Problem {
+    use crate::auth::oidc::OidcError;
+    use crate::auth::provisioning::ProvisionError;
+    use crate::auth::refresh::RefreshError;
+    match e {
+        LoginError::Token(err) => Problem::new(StatusCode::UNAUTHORIZED).detail(err.to_string()),
+        LoginError::Provision(ProvisionError::NotAllowed(_)) => Problem::new(StatusCode::FORBIDDEN)
+            .detail("onboarding is not permitted for this identity"),
+        LoginError::Provision(ProvisionError::MissingEmail) => {
+            Problem::new(StatusCode::UNAUTHORIZED).detail("token carried no email claim")
+        }
+        LoginError::Provision(ProvisionError::Db(err)) => {
+            Problem::new(StatusCode::INTERNAL_SERVER_ERROR).detail(err.to_string())
+        }
+        LoginError::Refresh(RefreshError::UnknownHandle) => {
+            Problem::new(StatusCode::UNAUTHORIZED).detail("refresh handle is invalid or expired")
+        }
+        LoginError::Refresh(err) => {
+            Problem::new(StatusCode::INTERNAL_SERVER_ERROR).detail(err.to_string())
+        }
+        LoginError::Oidc(OidcError::NotConfigured) => {
+            Problem::new(StatusCode::SERVICE_UNAVAILABLE).detail("OIDC is not configured")
+        }
+        LoginError::Oidc(err) => Problem::new(StatusCode::BAD_GATEWAY).detail(err.to_string()),
     }
-
-    let jwt_secret = ctx.config.get_jwt_config()?;
-
-    let token = user
-        .generate_jwt(&jwt_secret.secret, jwt_secret.expiration)
-        .or_else(|_| unauthorized("unauthorized!"))?;
-
-    format::json(LoginResponse::new(&user, &token))
 }
 
-#[debug_handler]
-async fn current(auth: auth::JWT, State(ctx): State<AppContext>) -> Result<Response> {
-    let user = users::Model::find_by_pid(&ctx.db, &auth.claims.pid).await?;
-    format::json(CurrentResponse::new(&user))
-}
-
-/// Magic link authentication provides a secure and passwordless way to log in to the application.
-///
-/// # Flow
-/// 1. **Request a Magic Link**:
-///    A registered user sends a POST request to `/magic-link` with their email.
-///    If the email exists, a short-lived, one-time-use token is generated and sent to the user's email.
-///    For security and to avoid exposing whether an email exists, the response always returns 200, even if the email is invalid.
-///
-/// 2. **Click the Magic Link**:
-///    The user clicks the link (/magic-link/{token}), which validates the token and its expiration.
-///    If valid, the server generates a JWT and responds with a [`LoginResponse`].
-///    If invalid or expired, an unauthorized response is returned.
-///
-/// This flow enhances security by avoiding traditional passwords and providing a seamless login experience.
-async fn magic_link(
-    State(ctx): State<AppContext>,
-    Json(params): Json<MagicLinkParams>,
-) -> Result<Response> {
-    let email_regex = get_allow_email_domain_re();
-    if !email_regex.is_match(&params.email) {
-        tracing::debug!(
-            email = params.email,
-            "The provided email is invalid or does not match the allowed domains"
-        );
-        return bad_request("invalid request");
-    }
-
-    let Ok(user) = users::Model::find_by_email(&ctx.db, &params.email).await else {
-        // we don't want to expose our users email. if the email is invalid we still
-        // returning success to the caller
-        tracing::debug!(email = params.email, "user not found by email");
-        return format::empty_json();
-    };
-
-    let user = user.into_active_model().create_magic_link(&ctx.db).await?;
-    AuthMailer::send_magic_link(&ctx, &user).await?;
-
-    format::empty_json()
-}
-
-/// Verifies a magic link token and authenticates the user.
-async fn magic_link_verify(
-    Path(token): Path<String>,
-    State(ctx): State<AppContext>,
-) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_magic_token(&ctx.db, &token).await else {
-        // we don't want to expose our users email. if the email is invalid we still
-        // returning success to the caller
-        return unauthorized("unauthorized!");
-    };
-
-    let user = user.into_active_model().clear_magic_link(&ctx.db).await?;
-
-    let jwt_secret = ctx.config.get_jwt_config()?;
-
-    let token = user
-        .generate_jwt(&jwt_secret.secret, jwt_secret.expiration)
-        .or_else(|_| unauthorized("unauthorized!"))?;
-
-    format::json(LoginResponse::new(&user, &token))
-}
-
-#[debug_handler]
-async fn resend_verification_email(
-    State(ctx): State<AppContext>,
-    Json(params): Json<ResendVerificationParams>,
-) -> Result<Response> {
-    let Ok(user) = users::Model::find_by_email(&ctx.db, &params.email).await else {
-        tracing::info!(
-            email = params.email,
-            "User not found for resend verification"
-        );
-        return format::json(());
-    };
-
-    if user.email_verified_at.is_some() {
-        tracing::info!(
-            pid = user.pid.to_string(),
-            "User already verified, skipping resend"
-        );
-        return format::json(());
-    }
-
-    let user = user
-        .into_active_model()
-        .set_email_verification_sent(&ctx.db)
-        .await?;
-
-    AuthMailer::send_welcome(&ctx, &user).await?;
-    tracing::info!(pid = user.pid.to_string(), "Verification email re-sent");
-
-    format::json(())
-}
-
+/// Routes mounted under the versioned API base.
 pub fn routes() -> Routes {
     Routes::new()
-        .prefix("/api/auth")
-        .add("/register", post(register))
-        .add("/verify/{token}", get(verify))
-        .add("/login", post(login))
-        .add("/forgot", post(forgot))
-        .add("/reset", post(reset))
-        .add("/current", get(current))
-        .add("/magic-link", post(magic_link))
-        .add("/magic-link/{token}", get(magic_link_verify))
-        .add("/resend-verification-mail", post(resend_verification_email))
+        .prefix("/api/v1/auth")
+        .add("/capabilities", get(capabilities))
+        .add("/login", get(login))
+        .add("/callback", post(callback))
+        .add("/refresh", post(refresh))
+        .add("/logout", post(logout))
+        .add("/me", get(me))
 }
