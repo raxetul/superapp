@@ -26,8 +26,11 @@ const ADMIN_PANEL: &str = "AdminPanel::\"main\"";
 const ADMIN_ACTION: &str = "Action::\"admin.access\"";
 
 /// Enforce that the current user may access the admin panel (Cedar). Returns a
-/// `403` problem on denial.
-async fn require_admin(state: &Arc<AuthState>, current: &CurrentUser) -> Result<(), Problem> {
+/// `403` problem on denial. Shared with the modules controller.
+pub(crate) async fn require_admin(
+    state: &Arc<AuthState>,
+    current: &CurrentUser,
+) -> Result<(), Problem> {
     let principal = format!("User::\"{}\"", current.user.email);
     let decision = state
         .enforcer

@@ -125,6 +125,39 @@ impl AuthSettings {
     }
 }
 
+/// An externally-trusted module signer (public key).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TrustedSigner {
+    /// Signer id referenced by a manifest signature.
+    pub signer: String,
+    /// Base64 (standard) 32-byte ed25519 public key.
+    pub public_key: String,
+}
+
+/// The `settings.modules` block (P5).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct ModulesSettings {
+    /// Where the self-signing key is persisted; a temp path when unset.
+    #[serde(default)]
+    pub signing_key_path: Option<String>,
+    /// External signer public keys to trust alongside the self key.
+    #[serde(default)]
+    pub trusted_signers: Vec<TrustedSigner>,
+}
+
+impl ModulesSettings {
+    /// Parse the `modules` block out of loco's `settings` JSON (defaults when absent).
+    ///
+    /// # Errors
+    /// When `settings.modules` is present but malformed.
+    pub fn from_settings(settings: Option<&serde_json::Value>) -> Result<Self, serde_json::Error> {
+        match settings.and_then(|s| s.get("modules")) {
+            Some(m) => serde_json::from_value(m.clone()),
+            None => Ok(ModulesSettings::default()),
+        }
+    }
+}
+
 /// Interpret a raw env value as the self-registration boolean. Truthy values
 /// are `1`, `true`, `yes`, `on` (case-insensitive, trimmed); everything else —
 /// including absence — is `false` (TR-04-011 default disabled).

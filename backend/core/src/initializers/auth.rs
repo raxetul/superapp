@@ -13,7 +13,7 @@ use axum::Extension;
 use axum::Router as AxumRouter;
 use loco_rs::prelude::*;
 
-use crate::auth::config::{self_registration_enabled, AuthSettings};
+use crate::auth::config::{self_registration_enabled, AuthSettings, ModulesSettings};
 use crate::auth::state::AuthState;
 
 /// Default location of the Cedar policy files (relative to the working dir).
@@ -30,10 +30,13 @@ impl Initializer for AuthInitializer {
     async fn after_routes(&self, router: AxumRouter, ctx: &AppContext) -> Result<AxumRouter> {
         let settings = AuthSettings::from_settings(ctx.config.settings.as_ref())
             .map_err(|e| Error::Message(format!("invalid settings.auth: {e}")))?;
+        let modules_settings = ModulesSettings::from_settings(ctx.config.settings.as_ref())
+            .map_err(|e| Error::Message(format!("invalid settings.modules: {e}")))?;
 
         let policies_dir = PathBuf::from(DEFAULT_POLICIES_DIR);
         let state = AuthState::build(
             &settings,
+            &modules_settings,
             ctx.db.clone(),
             &policies_dir,
             self_registration_enabled(),

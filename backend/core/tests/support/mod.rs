@@ -81,3 +81,65 @@ pub fn sign(claims: &Value) -> String {
 pub fn bearer(email: &str) -> String {
     format!("Bearer {}", access_token(email))
 }
+
+// --- P5 module signing (matches config/test.yaml `modules.trusted_signers`) ---
+
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use ed25519_dalek::{Signer, SigningKey};
+use superapp_core::modules::manifest::{Endpoint, Manifest, Signature};
+
+/// Signer id trusted by the test profile.
+pub const MODULE_SIGNER: &str = "test-signer";
+/// The deterministic ed25519 private seed whose public key is trusted in
+/// `config/test.yaml`.
+const MODULE_SEED_B64: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+
+fn module_signing_key() -> SigningKey {
+    let seed: [u8; 32] = STANDARD
+        .decode(MODULE_SEED_B64)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    SigningKey::from_bytes(&seed)
+}
+
+/// Build a sample module manifest with a `currency`-requiring config schema.
+#[must_use]
+pub fn sample_manifest(name: &str, version: &str) -> Manifest {
+    Manifest {
+        name: name.into(),
+        version: version.into(),
+        endpoints: vec![Endpoint {
+            method: "GET".into(),
+            path: "/items".into(),
+            permission: Some("billing:read".into()),
+        }],
+        permissions: vec!["billing:read".into()],
+        config_schema: serde_json::json!({
+            "type": "object",
+            "required": ["currency"],
+            "properties": { "currency": { "type": "string" } }
+        }),
+        signatures: vec![],
+    }
+}
+
+/// Attach a valid `test-signer` ed25519 signature over the manifest's code
+/// artifact.
+pub fn sign_manifest(m: &mut Manifest) {
+    let sig = module_signing_key().sign(&m.code_artifact_bytes());
+    m.signatures.push(Signature {
+        signer: MODULE_SIGNER.into(),
+        algorithm: "ed25519".into(),
+        value: STANDARD.encode(sig.to_bytes()),
+    });
+}
+
+/// A signed sample manifest serialized to JSON (ready to POST).
+#[must_use]
+pub fn signed_manifest_json(name: &str, version: &str) -> String {
+    let mut m = sample_manifest(name, version);
+    sign_manifest(&mut m);
+    serde_json::to_string(&m).unwrap()
+}

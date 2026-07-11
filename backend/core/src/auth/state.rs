@@ -13,13 +13,16 @@ use std::sync::Arc;
 
 use sea_orm::DatabaseConnection;
 
-use crate::auth::config::AuthSettings;
+use crate::auth::config::{AuthSettings, ModulesSettings};
 use crate::auth::oidc::{self, OidcProvider, RauthyOidcClient};
 use crate::auth::refresh::{InMemoryRefreshStore, RefreshStore, RefreshTokens};
 use crate::auth::token::TokenValidator;
 use crate::authz::engine::PolicyEngine;
 use crate::authz::entities::{CachedEntityProvider, DbEntityProvider, SystemClock};
 use crate::authz::Enforcer;
+use crate::modules::registry::{Gateway, ModuleRegistry};
+use crate::modules::runtime::DockerRuntime;
+use crate::modules::signing::{SelfSigner, TrustStore};
 
 const ENTITY_CACHE_TTL_MILLIS: u64 = 5_000;
 
@@ -50,6 +53,12 @@ pub struct AuthState {
     pub self_registration_enabled: bool,
     /// Whether an OIDC provider is configured (surfaced by `/auth/capabilities`).
     pub oidc_configured: bool,
+    /// Trusted module-signer public keys (self + external) (TR-05-002/009).
+    pub trust: Arc<TrustStore>,
+    /// Module lifecycle registry (P5).
+    pub registry: Arc<ModuleRegistry>,
+    /// Cedar-enforcing module gateway (TR-05-007).
+    pub gateway: Arc<Gateway>,
 }
 
 impl AuthState {
@@ -60,6 +69,7 @@ impl AuthState {
     /// [`AuthStateError::Policies`] if the policy set cannot be loaded.
     pub async fn build(
         settings: &AuthSettings,
+        modules_settings: &ModulesSettings,
         db: DatabaseConnection,
         policies_dir: &Path,
         self_registration_enabled: bool,
@@ -73,6 +83,32 @@ impl AuthState {
             ENTITY_CACHE_TTL_MILLIS,
         );
         let enforcer = Arc::new(Enforcer::new(engine, Arc::new(provider)));
+
+        // Module signing trust store: self key (bootstrapped on first startup)
+        // plus any configured external signers (TR-05-002 / TR-05-009).
+        let key_path = modules_settings.signing_key_path.clone().map_or_else(
+            || std::env::temp_dir().join("superapp/self_signing.key"),
+            std::path::PathBuf::from,
+        );
+        let self_signer = match SelfSigner::load_or_generate(&key_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "self-signing key persistence failed; using ephemeral key");
+                SelfSigner::generate()
+            }
+        };
+        let mut trust = self_signer.trust_store();
+        for ext in &modules_settings.trusted_signers {
+            if let Err(e) = trust.add_base64(&ext.signer, &ext.public_key) {
+                tracing::warn!(signer = %ext.signer, error = %e, "ignoring malformed trusted signer key");
+            }
+        }
+        let trust = Arc::new(trust);
+
+        // Module runtime + gateway. Docker in production; the gateway enforces
+        // Cedar before proxying (TR-05-007).
+        let registry = Arc::new(ModuleRegistry::new(Arc::new(DockerRuntime::default())));
+        let gateway = Arc::new(Gateway::new(registry.clone(), enforcer.clone()));
 
         // Access-token validator: static JWKS first, else OIDC discovery.
         let validator = build_validator(settings).await.map(Arc::new);
@@ -109,6 +145,9 @@ impl AuthState {
             access_ttl_secs: settings.access_token_ttl_secs,
             self_registration_enabled,
             oidc_configured,
+            trust,
+            registry,
+            gateway,
         })
     }
 }

@@ -4,4 +4,5 @@ pub mod prelude;
 
 pub mod allowlisted_emails;
 pub mod api_keys;
+pub mod modules;
 pub mod users;

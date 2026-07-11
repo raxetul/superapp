@@ -9,6 +9,7 @@ pub mod initializers;
 pub mod mailers;
 pub mod metrics;
 pub mod models;
+pub mod modules;
 pub mod response;
 pub mod tasks;
 pub mod views;

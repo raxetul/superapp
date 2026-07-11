@@ -109,3 +109,10 @@ settings:
     issuer: "https://rauthy.example/auth/v1"
     audience: "superapp"
     jwks_json: '{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"test-key-1","n":"rOWhAhYJGCX4lcWllUuqfSCDbgNjLSHbTkI8wlAtIRI5gySpt8wzIzgX0sMQMpMiQhM_973W9aS-I0ytoDSXZ_qs8j8woqTxWoxGR_U3uQWD6dxJg5Fun3po8AvBO6T7AE34LlGV6ENT7d4Ado0dtCGoLlOvQqRKD3oSTpPKzXIeXq1hLtU9FM2Xqhj4k749fZ411NJByq0dH2IKyweuRKxtu4k2_biMqKF2Bsf8qeeu1N2e0mzZHIzNcFin4FnotJZ-qHJdAYv391c2tnHki5Z8N67M6cbPGKXp0-Ci5UZvvTyTpYadBx9e46kYLQQvZk0SQ0Fg-ILfhs4NCSmMPQ","e":"AQAB"}]}'
+
+  # P5 module system: a known external signer (matching tests/support ed25519
+  # seed) so registration signature verification can be exercised under test.
+  modules:
+    trusted_signers:
+      - signer: "test-signer"
+        public_key: "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ="
