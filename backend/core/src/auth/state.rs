@@ -20,6 +20,7 @@ use crate::auth::token::TokenValidator;
 use crate::authz::engine::PolicyEngine;
 use crate::authz::entities::{CachedEntityProvider, DbEntityProvider, SystemClock};
 use crate::authz::Enforcer;
+use crate::events::EventHub;
 use crate::modules::registry::{Gateway, ModuleRegistry};
 use crate::modules::runtime::DockerRuntime;
 use crate::modules::signing::{SelfSigner, TrustStore};
@@ -59,6 +60,8 @@ pub struct AuthState {
     pub registry: Arc<ModuleRegistry>,
     /// Cedar-enforcing module gateway (TR-05-007).
     pub gateway: Arc<Gateway>,
+    /// Real-time SSE event hub (P6).
+    pub events: Arc<EventHub>,
 }
 
 impl AuthState {
@@ -148,6 +151,7 @@ impl AuthState {
             trust,
             registry,
             gateway,
+            events: Arc::new(EventHub::default()),
         })
     }
 }

@@ -32,7 +32,9 @@ tokio = { version = "1.45", default-features = false, features = [
   "net",
   "macros",
   "time",
+  "sync",
 ] }
+futures = { version = "0.3" }
 async-trait = { version = "0.1" }
 axum = { version = "0.8" }
 tracing = { version = "0.1" }
@@ -72,6 +74,10 @@ thiserror = { version = "1" }
 # --- P5: Dynamic module loading ---
 # ed25519 module-artifact signing/verification (TR-05-002 / TR-05-009).
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# --- P6: Real-time & messaging ---
+# MPMC channels model Kafka consumer-group load-balancing in-memory (TR-06-005).
+async-channel = { version = "2" }
 
 [[bin]]
 name = "core-cli"

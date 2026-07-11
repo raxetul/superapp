@@ -11,7 +11,7 @@ This file drives the bottom tmux phase strip (see `~/.claude/scripts/agentic-pha
 - [x] Backend core bootstrap (loco.rs scaffold, config, SeaORM/DB, logging, response/validator)
 - [x] Authentication, SSO & policy-based AuthZ (Rauthy IdP broker over OIDC via `openidconnect` RP, JWT access/refresh rotation, Cedar `cedar-policy` rule-based authorization, admin bootstrap, middleware)
 - [x] Dynamic module loading system (plugin loader, `/modules/register`, health checks)
-- [ ] Real-time & messaging (HTTP2 SSE event stream, Kafka topics & consumers)
+- [x] Real-time & messaging (HTTP2 SSE event stream, Kafka topics & consumers)
 - [ ] Frontend core (React + ShadCN, auth flows, role-based routing, module host)
 - [ ] Mobile core (React Native + Tamagui, auth, navigation, module host)
 - [ ] Module SDK & reference module (cross-platform contracts, sample end-to-end module)
