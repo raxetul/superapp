@@ -8,3 +8,6 @@ coverage
 !.env.example
 .DS_Store
 *.log
+
+# TypeScript incremental build info
+*.tsbuildinfo
