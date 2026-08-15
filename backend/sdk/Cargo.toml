@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "superapp-module-sdk"
+version = "1.0.0"
+edition = "2021"
+# Same MSRV pin as backend/core (rustc 1.85, source tarball, no rustup) — a
+# module author's toolchain must not need anything newer.
+rust-version = "1.85"
+publish = false
+description = "SuperApp backend module SDK (TR-09-001): the HTTP service contract a module container exposes, and the Rust types/helpers to implement it."
+
+[lib]
+name = "superapp_module_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+axum = { version = "0.8" }
+tokio = { version = "1.45", default-features = false, features = ["net", "rt-multi-thread", "macros"] }
+async-trait = { version = "0.1" }
+thiserror = { version = "1" }
+base64 = { version = "0.22" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = { version = "0.8" }
+
+[dev-dependencies]
+tokio = { version = "1.45", default-features = false, features = ["net", "rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

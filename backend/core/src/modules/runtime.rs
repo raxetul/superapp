@@ -150,6 +150,11 @@ impl ContainerRuntime for DockerRuntime {
 /// `SUPERAPP_MODULE_BEHAVIOR` env key on the spec).
 const BEHAVIOR_ENV: &str = "SUPERAPP_MODULE_BEHAVIOR";
 
+/// SDK version the fake module server reports on `GET /sdk` (TR-09-005). When
+/// unset, `/sdk` 404s — modeling a pre-SDK module that reports no version at
+/// all (the core treats that as compatible; see `modules::compat`).
+const SDK_VERSION_ENV: &str = "SUPERAPP_MODULE_SDK_VERSION";
+
 struct FakeServer {
     task: tokio::task::JoinHandle<()>,
     hits: Arc<AtomicU64>,
@@ -185,10 +190,12 @@ impl ContainerRuntime for InProcessRuntime {
     async fn start(&self, spec: &ModuleSpec) -> Result<RunningHandle, RuntimeError> {
         use axum::extract::State;
         use axum::http::StatusCode;
+        use axum::response::IntoResponse;
         use axum::routing::any;
         use axum::Router;
 
         let unhealthy = spec.env.get(BEHAVIOR_ENV).map(String::as_str) == Some("unhealthy");
+        let sdk_version = spec.env.get(SDK_VERSION_ENV).cloned();
         let hits = Arc::new(AtomicU64::new(0));
         let name = spec.name.clone();
 
@@ -202,6 +209,20 @@ impl ContainerRuntime for InProcessRuntime {
                         StatusCode::SERVICE_UNAVAILABLE
                     } else {
                         StatusCode::OK
+                    }
+                }),
+            )
+            .route(
+                "/sdk",
+                any(move || {
+                    let sdk_version = sdk_version.clone();
+                    async move {
+                        match sdk_version {
+                            Some(v) => {
+                                axum::Json(serde_json::json!({ "sdkVersion": v })).into_response()
+                            }
+                            None => StatusCode::NOT_FOUND.into_response(),
+                        }
                     }
                 }),
             )

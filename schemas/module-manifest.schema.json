@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://superapp/schemas/module-manifest.schema.json",
+  "title": "SuperApp module manifest",
+  "description": "Canonical manifest schema (TR-09-004). ONE shape used by every platform (backend Rust SDK, frontend/mobile TypeScript SDKs) and by the core's POST /api/v1/modules/register (TR-05-003). Must match backend/core/src/modules/manifest.rs::Manifest exactly — see docs/phases/p9-module-sdk.md.",
+  "type": "object",
+  "required": ["name", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique module name."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Module version (semver recommended)."
+    },
+    "endpoints": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "#/definitions/endpoint" }
+    },
+    "permissions": {
+      "type": "array",
+      "default": [],
+      "items": { "type": "string" }
+    },
+    "config_schema": {
+      "description": "JSON Schema for this module's configuration document.",
+      "default": {}
+    },
+    "signatures": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "#/definitions/signature" }
+    }
+  },
+  "definitions": {
+    "endpoint": {
+      "type": "object",
+      "required": ["method", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "permission": {
+          "type": ["string", "null"],
+          "description": "Cedar permission required to call this endpoint; omitted/null ⇒ always allowed by the gateway."
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["signer", "algorithm", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "signer": { "type": "string", "minLength": 1 },
+        "algorithm": { "type": "string", "enum": ["ed25519"] },
+        "value": { "type": "string", "minLength": 1, "description": "Base64 (standard) signature bytes." }
+      }
+    }
+  }
+}
