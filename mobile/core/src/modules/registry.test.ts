@@ -1,6 +1,6 @@
 /** TR-08-005 — module host: dynamic load, lifecycle, permission-gated screens. */
 import type { ComponentType } from 'react';
-import { ModuleRegistry } from './registry';
+import { isSdkVersionCompatible, ModuleRegistry } from './registry';
 import type { ModuleContext, ModuleDefinition } from './types';
 
 const Dummy = (() => null) as unknown as ComponentType<Record<string, unknown>>;
@@ -66,5 +66,35 @@ describe('ModuleRegistry (TR-08-005)', () => {
     await registry.register(makeModule({ components: { Badge: Dummy } }), ctx());
     expect(registry.component('reports', 'Badge')).toBe(Dummy);
     expect(registry.component('reports', 'Missing')).toBeUndefined();
+  });
+});
+
+describe('TR-09-005 SDK version compatibility', () => {
+  it('a module with a compatible SDK version registers normally', async () => {
+    const registry = new ModuleRegistry();
+    await registry.register(makeModule({ sdkVersion: '1.2.0' }), ctx());
+    expect(registry.has('reports')).toBe(true);
+  });
+
+  it('a module with no declared SDK version registers normally', async () => {
+    const registry = new ModuleRegistry();
+    await registry.register(makeModule({ sdkVersion: undefined }), ctx());
+    expect(registry.has('reports')).toBe(true);
+  });
+
+  it('a module with an incompatible SDK major version is rejected before initialize runs', async () => {
+    const initialize = jest.fn();
+    const registry = new ModuleRegistry();
+    await expect(
+      registry.register(makeModule({ sdkVersion: '2.0.0', initialize }), ctx()),
+    ).rejects.toThrow(/incompatible SDK version/);
+    expect(initialize).not.toHaveBeenCalled();
+    expect(registry.has('reports')).toBe(false);
+  });
+
+  it('isSdkVersionCompatible matches major-version rule', () => {
+    expect(isSdkVersionCompatible(undefined)).toBe(true);
+    expect(isSdkVersionCompatible('1.9.9')).toBe(true);
+    expect(isSdkVersionCompatible('2.0.0')).toBe(false);
   });
 });
