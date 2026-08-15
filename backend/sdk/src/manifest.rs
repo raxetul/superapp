@@ -226,4 +226,28 @@ mod tests {
             );
         }
     }
+
+    /// TR-09-006: keep this fixture in sync with
+    /// `scripts/module-sdk/__tests__/canonical.test.mjs`'s
+    /// "matches the exact byte-for-byte fixture..." test — both sides assert
+    /// the identical canonical bytes for the identical fixture manifest,
+    /// proving the Rust `code_artifact_bytes` and the JS packaging script's
+    /// `codeArtifactBytes` agree byte-for-byte (so a Node-signed manifest
+    /// verifies against Rust's `signing::verify`, and vice versa).
+    #[test]
+    fn matches_js_packaging_fixture() {
+        let fixture = Manifest::new("fixture", "1.0.0")
+            .endpoint("GET", "/items", Some("fixture:read"))
+            .permission("fixture:read")
+            .config_schema(json!({"type":"object"}));
+        let expected = concat!(
+            r#"{"config_schema":{"type":"object"},"#,
+            r#""endpoints":[{"method":"GET","path":"/items","permission":"fixture:read"}],"#,
+            r#""name":"fixture","permissions":["fixture:read"],"version":"1.0.0"}"#,
+        );
+        assert_eq!(
+            String::from_utf8(fixture.code_artifact_bytes()).unwrap(),
+            expected
+        );
+    }
 }

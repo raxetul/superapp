@@ -1,0 +1,9 @@
+{
+  "name": "@superapp/module-sdk-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TR-09-006 module scaffolding + signed packaging CLIs (scaffold-module.mjs, package-module.mjs). No dependencies — Node.js built-ins only.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
