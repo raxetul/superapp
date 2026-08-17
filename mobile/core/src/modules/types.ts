@@ -31,6 +31,13 @@ export interface ModuleDefinition {
   permissions: string[];
   screens: ModuleScreen[];
   components?: Record<string, ComponentType<Record<string, unknown>>>;
+  /**
+   * SDK major version this module was built against (TR-09-005), e.g.
+   * `"1.0.0"` (see `@superapp/module-sdk-mobile`'s `SDK_VERSION`). Omit for
+   * pre-SDK modules — `ModuleRegistry.register` treats a missing version as
+   * compatible; an incompatible major version is rejected with a clear error.
+   */
+  sdkVersion?: string;
   initialize?: (ctx: ModuleContext) => void | Promise<void>;
   cleanup?: () => void | Promise<void>;
 }

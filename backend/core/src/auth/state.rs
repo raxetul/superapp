@@ -62,6 +62,9 @@ pub struct AuthState {
     pub gateway: Arc<Gateway>,
     /// Real-time SSE event hub (P6).
     pub events: Arc<EventHub>,
+    /// Self-hosted private OCI registry host modules resolve images from
+    /// (TR-09-009); empty when unconfigured (see `modules::oci`).
+    pub registry_host: String,
 }
 
 impl AuthState {
@@ -152,6 +155,7 @@ impl AuthState {
             registry,
             gateway,
             events: Arc::new(EventHub::default()),
+            registry_host: modules_settings.registry_host.clone().unwrap_or_default(),
         })
     }
 }

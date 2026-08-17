@@ -89,3 +89,6 @@ loco-rs = { workspace = true, features = ["testing"] }
 serial_test = { version = "3.1.1" }
 rstest = { version = "0.25" }
 insta = { version = "1.34", features = ["redactions", "yaml", "filters"] }
+# P9: the real reference-module router, run in-process (no Docker) to prove
+# register→load→Cedar-gated-proxy→health against real module code.
+reference-module = { path = "../modules/reference" }

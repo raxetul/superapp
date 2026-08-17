@@ -12,9 +12,13 @@
 //!   (TR-05-001/004).
 //! - [`registry`] — lifecycle management + gateway proxying + fault isolation
 //!   + Cedar enforcement (TR-05-001/004/005/007/008).
+//! - [`compat`] — SDK version compatibility enforced at load (TR-09-005).
+//! - [`oci`] — private-registry image reference resolution (TR-09-009).
 
+pub mod compat;
 pub mod config_schema;
 pub mod manifest;
+pub mod oci;
 pub mod registry;
 pub mod runtime;
 pub mod signing;

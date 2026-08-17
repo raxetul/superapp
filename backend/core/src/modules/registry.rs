@@ -17,8 +17,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cedar_policy::Context;
+use serde::Deserialize;
 
 use crate::authz::Enforcer;
+use crate::modules::compat::{self, CompatError};
 use crate::modules::manifest::Manifest;
 use crate::modules::runtime::{ContainerRuntime, ModuleSpec, RunningHandle, RuntimeError};
 
@@ -58,6 +60,10 @@ pub enum LoadError {
     Runtime(#[from] RuntimeError),
     #[error("module `{0}` did not become ready in time")]
     NotReady(String),
+    /// TR-09-005: the module reported an SDK version this core release
+    /// cannot load.
+    #[error("module `{module}` is incompatible: {reason}")]
+    IncompatibleSdk { module: String, reason: CompatError },
 }
 
 const READINESS_TRIES: u32 = 30;
@@ -91,6 +97,17 @@ impl ModuleRegistry {
         if !self.await_ready(&handle.address).await {
             let _ = self.runtime.stop(&handle).await;
             return Err(LoadError::NotReady(spec.name.clone()));
+        }
+        // TR-09-005: a module that reports an SDK version is rejected here if
+        // it's incompatible. No `/sdk` endpoint (pre-SDK modules) ⇒ allowed.
+        if let Some(version) = self.probe_sdk_version(&handle.address).await {
+            if let Err(reason) = compat::check_compatible(&version) {
+                let _ = self.runtime.stop(&handle).await;
+                return Err(LoadError::IncompatibleSdk {
+                    module: spec.name.clone(),
+                    reason,
+                });
+            }
         }
         self.loaded
             .lock()
@@ -155,6 +172,27 @@ impl ModuleRegistry {
             Ok(_) => ModuleHealth::Unhealthy,
             Err(_) => ModuleHealth::Unreachable,
         }
+    }
+
+    /// `GET /sdk` on a starting module. `None` when it 404s or is
+    /// unreachable — treated as a pre-SDK module (TR-09-005).
+    async fn probe_sdk_version(&self, address: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct SdkInfo {
+            #[serde(rename = "sdkVersion")]
+            sdk_version: String,
+        }
+        let resp = self
+            .http
+            .get(format!("{address}/sdk"))
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.json::<SdkInfo>().await.ok().map(|i| i.sdk_version)
     }
 
     /// Report a module's current health (TR-05-005).
@@ -345,6 +383,45 @@ mod tests {
             reg.proxy_get("b", "/items").await,
             ProxyOutcome::Response { status: 200, .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn compatible_sdk_version_loads() {
+        let rt = Arc::new(InProcessRuntime::new());
+        let reg = ModuleRegistry::new(rt);
+        let mut s = spec("greeter", None);
+        s.env
+            .insert("SUPERAPP_MODULE_SDK_VERSION".into(), "1.2.0".into());
+        reg.load(manifest("greeter", None), &s)
+            .await
+            .expect("compatible SDK major version loads");
+        assert!(reg.is_loaded("greeter"));
+    }
+
+    #[tokio::test]
+    async fn incompatible_sdk_version_is_rejected_at_load() {
+        let rt = Arc::new(InProcessRuntime::new());
+        let reg = ModuleRegistry::new(rt);
+        let mut s = spec("rogue", None);
+        s.env
+            .insert("SUPERAPP_MODULE_SDK_VERSION".into(), "2.0.0".into());
+        let err = reg.load(manifest("rogue", None), &s).await;
+        assert!(
+            matches!(err, Err(LoadError::IncompatibleSdk { .. })),
+            "expected IncompatibleSdk, got {err:?}"
+        );
+        assert!(!reg.is_loaded("rogue"));
+    }
+
+    #[tokio::test]
+    async fn module_with_no_sdk_endpoint_still_loads() {
+        // Pre-SDK / non-Rust-SDK modules report no version at all.
+        let rt = Arc::new(InProcessRuntime::new());
+        let reg = ModuleRegistry::new(rt);
+        reg.load(manifest("legacy", None), &spec("legacy", None))
+            .await
+            .expect("a module with no /sdk endpoint is treated as compatible");
+        assert!(reg.is_loaded("legacy"));
     }
 
     #[tokio::test]

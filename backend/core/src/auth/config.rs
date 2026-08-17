@@ -143,6 +143,10 @@ pub struct ModulesSettings {
     /// External signer public keys to trust alongside the self key.
     #[serde(default)]
     pub trusted_signers: Vec<TrustedSigner>,
+    /// Self-hosted private OCI registry host modules are resolved from
+    /// (TR-09-009), e.g. `registry.superapp.internal`. Empty when unset.
+    #[serde(default)]
+    pub registry_host: Option<String>,
 }
 
 impl ModulesSettings {

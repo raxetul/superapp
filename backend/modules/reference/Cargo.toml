@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "reference-module"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "TR-09-007 reference module: a minimal real module built with the backend module SDK."
+
+[lib]
+name = "reference_module"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reference-module"
+path = "src/main.rs"
+
+[dependencies]
+superapp-module-sdk = { path = "../../sdk" }
+serde_json = { version = "1" }
+axum = { version = "0.8" }
+tokio = { version = "1.45", default-features = false, features = ["net", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

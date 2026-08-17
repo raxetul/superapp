@@ -23,13 +23,33 @@ export function hasPermission(
   return set.has(required);
 }
 
+/** The SDK major version this host currently supports (TR-09-005). */
+export const SUPPORTED_SDK_MAJOR = 1;
+
+/** True if a module-declared `sdkVersion` is compatible (missing ⇒ true). */
+export function isSdkVersionCompatible(sdkVersion?: string): boolean {
+  if (sdkVersion == null) return true;
+  const major = Number.parseInt(sdkVersion.split(".")[0] ?? "", 10);
+  return !Number.isNaN(major) && major === SUPPORTED_SDK_MAJOR;
+}
+
 export class ModuleRegistry {
   private readonly modules = new Map<string, FrontendModule>();
 
-  /** Register and initialize a module. Throws on duplicate id. */
+  /**
+   * Register and initialize a module. Throws on duplicate id, or on an
+   * incompatible declared `sdkVersion` (TR-09-005) — before `initialize` ever
+   * runs.
+   */
   async register(module: FrontendModule, ctx: ModuleContext): Promise<void> {
     if (this.modules.has(module.id)) {
       throw new Error(`module already registered: ${module.id}`);
+    }
+    if (!isSdkVersionCompatible(module.sdkVersion)) {
+      throw new Error(
+        `module "${module.id}" was built against an incompatible SDK version ` +
+          `(${module.sdkVersion}); this host supports major version ${SUPPORTED_SDK_MAJOR}`,
+      );
     }
     this.modules.set(module.id, module);
     await module.initialize?.(ctx);

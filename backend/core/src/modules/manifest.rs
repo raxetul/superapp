@@ -190,4 +190,59 @@ mod tests {
         code_changed.endpoints[0].path = "/invoices/all".into();
         assert_ne!(base, code_changed.code_artifact_bytes());
     }
+
+    /// TR-09-004: the canonical schema (shared with the SDKs and
+    /// `/modules/register`) must declare exactly this struct's fields — no
+    /// divergence between the Rust type and the cross-platform schema.
+    #[test]
+    fn matches_canonical_manifest_schema() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../schemas/module-manifest.schema.json"
+        ))
+        .expect("canonical schema is valid JSON");
+        let props: Vec<&str> = schema["properties"]
+            .as_object()
+            .expect("schema has a properties object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for field in [
+            "name",
+            "version",
+            "endpoints",
+            "permissions",
+            "config_schema",
+            "signatures",
+        ] {
+            assert!(
+                props.contains(&field),
+                "canonical schema is missing Manifest field `{field}`"
+            );
+        }
+        assert_eq!(
+            props.len(),
+            6,
+            "canonical schema declares a field Manifest does not have: {props:?}"
+        );
+
+        let endpoint_props: Vec<&str> = schema["definitions"]["endpoint"]["properties"]
+            .as_object()
+            .expect("schema declares an endpoint definition")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for field in ["method", "path", "permission"] {
+            assert!(endpoint_props.contains(&field));
+        }
+
+        let signature_props: Vec<&str> = schema["definitions"]["signature"]["properties"]
+            .as_object()
+            .expect("schema declares a signature definition")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for field in ["signer", "algorithm", "value"] {
+            assert!(signature_props.contains(&field));
+        }
+    }
 }

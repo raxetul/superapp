@@ -1,0 +1,107 @@
+openapi: 3.0.3
+info:
+  title: SuperApp module service contract
+  version: "1.0.0"
+  description: >
+    TR-09-001. The fixed HTTP surface every module container exposes to the
+    core gateway, regardless of language or framework. Implemented in Rust by
+    `backend/sdk`'s `ModuleServer` (see `backend/modules/reference`); any
+    other language may implement this same contract. Business routes (the
+    manifest's declared `endpoints`) are additional to this surface and are
+    proxied by the gateway after Cedar authorization — they are not part of
+    this document since their shape is module-specific.
+servers:
+  - url: "http://{module-host}:{module-port}"
+    variables:
+      module-host:
+        default: 127.0.0.1
+      module-port:
+        default: "8080"
+paths:
+  /health:
+    get:
+      summary: Liveness/readiness probe (TR-05-004/005)
+      description: >
+        Polled by the core's ModuleRegistry before marking the module ready
+        and beginning to serve its routes, and periodically thereafter for
+        health reporting.
+      responses:
+        "200":
+          description: healthy
+        "503":
+          description: unhealthy (fails readiness / reports unhealthy)
+  /ready:
+    get:
+      summary: Alias of /health, for readiness-probe-only deployments
+      responses:
+        "200":
+          description: ready
+        "503":
+          description: not ready
+  /sdk:
+    get:
+      summary: SDK version (TR-09-005)
+      description: >
+        The core checks this against its supported major version at load
+        time; an incompatible module is rejected before being marked ready.
+        A module with no `/sdk` endpoint (404) is treated as compatible
+        (pre-SDK / non-Rust-SDK modules).
+      responses:
+        "200":
+          description: SDK version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sdkVersion]
+                properties:
+                  sdkVersion:
+                    type: string
+                    example: "1.0.0"
+        "404":
+          description: no SDK version reported (treated as compatible)
+  /manifest:
+    get:
+      summary: The module's own manifest (operator inspection)
+      responses:
+        "200":
+          description: the manifest
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/module-manifest.schema.json"
+  /config:
+    get:
+      summary: Current configuration document
+      responses:
+        "200":
+          description: current config
+          content:
+            application/json:
+              schema: {}
+    put:
+      summary: Update configuration, schema-validated (TR-05-006)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: applied
+        "422":
+          description: config failed validation against the manifest's config_schema
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        pointer:
+                          type: string
+                        detail:
+                          type: string

@@ -56,6 +56,7 @@ impl Hooks for App {
             .add_route(controllers::auth::routes())
             .add_route(controllers::admin::routes())
             .add_route(controllers::modules::routes())
+            .add_route(controllers::gateway::routes())
             .add_route(controllers::events::routes())
             .add_route(controllers::meta::routes())
             .add_route(controllers::system::routes())

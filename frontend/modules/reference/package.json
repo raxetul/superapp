@@ -1,0 +1,21 @@
+{
+  "name": "@superapp/module-reference-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "TR-09-007 reference module (web half): a minimal frontend module built with @superapp/module-sdk-web.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "react": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}
