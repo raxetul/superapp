@@ -155,6 +155,14 @@ jobs:
           cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
       - working-directory: ${{ matrix.pkg }}
         run: npm ci
+      # mobile/core's reference.integration.test.ts imports mobile/modules/
+      # reference by relative path (no npm workspaces yet — see
+      # docs/phases/p9-module-sdk.md) — Babel's transform of that file needs
+      # its OWN node_modules/@babel/runtime, not mobile/core's.
+      - name: Install mobile/modules/reference (cross-package test import)
+        if: matrix.pkg == 'mobile/core'
+        working-directory: mobile/modules/reference
+        run: npm ci
       - working-directory: ${{ matrix.pkg }}
         run: npm run typecheck --if-present
       # TR-10-002: mobile/core is the critical-path package, gated at 80%
