@@ -1,0 +1,93 @@
+# Loco configuration file documentation
+#
+# Production profile TEMPLATE (TR-10-007). `config/production.yaml` itself is
+# gitignored (see backend/core/.gitignore, `**/config/production.yaml`) so a
+# filled-in prod config is never accidentally committed — same pattern as
+# `.env.example` -> `.env` at the repo root. Every value below is sourced from
+# env at container start (Tera `get_env`); values with **no default** make the
+# container fail fast at boot if the operator forgot to set them, instead of
+# booting insecurely. Copy this file to `config/production.yaml` before
+# building/running the production image:
+#
+#   cp backend/core/config/production.yaml.example backend/core/config/production.yaml
+#
+# (scripts/prepare-prod-config.sh does this idempotently; the backend
+# Dockerfile's build step and the CI publish job both run it first.)
+
+# Application logging configuration
+logger:
+  enable: true
+  # No pretty backtraces in prod: keep panic output structured, not decorative.
+  pretty_backtrace: false
+  level: "{{ get_env(name='SUPERAPP_BACKEND_LOG_LEVEL', default='info') }}"
+  # JSON so a log shipper (or `docker logs` -> Grafana/Loki via helvetia-compose)
+  # can parse it; compact/pretty are dev-only.
+  format: json
+
+# Web server configuration
+server:
+  # 0.0.0.0: the container's network namespace, not a host loopback.
+  binding: "0.0.0.0"
+  port: {{ get_env(name="SUPERAPP_BACKEND_PORT", default="5150") }}
+  host: "{{ get_env(name='SUPERAPP_BACKEND_PUBLIC_HOST', default='http://localhost:5150') }}"
+  middlewares:
+
+# Worker Configuration
+workers:
+  mode: BackgroundAsync
+
+# Mailer Configuration.
+mailer:
+  smtp:
+    enable: {{ get_env(name="SUPERAPP_BACKEND_SMTP_ENABLE", default="false") }}
+    host: "{{ get_env(name='SUPERAPP_BACKEND_SMTP_HOST', default='localhost') }}"
+    port: {{ get_env(name="SUPERAPP_BACKEND_SMTP_PORT", default="1025") }}
+    secure: {{ get_env(name="SUPERAPP_BACKEND_SMTP_SECURE", default="true") }}
+
+# Database Configuration
+database:
+  # No default: a production boot with no DSN is a misconfiguration, not a
+  # dev fallback to localhost.
+  uri: {{ get_env(name="SUPERAPP_BACKEND_DATABASE_URL") }}
+  enable_logging: false
+  connect_timeout: {{ get_env(name="DB_CONNECT_TIMEOUT", default="1000") }}
+  idle_timeout: {{ get_env(name="DB_IDLE_TIMEOUT", default="2000") }}
+  min_connections: {{ get_env(name="DB_MIN_CONNECTIONS", default="2") }}
+  max_connections: {{ get_env(name="DB_MAX_CONNECTIONS", default="10") }}
+  auto_migrate: {{ get_env(name="SUPERAPP_BACKEND_AUTO_MIGRATE", default="true") }}
+  dangerously_truncate: false
+  dangerously_recreate: false
+
+# Authentication Configuration
+auth:
+  jwt:
+    # No default — see the module-level note above.
+    secret: "{{ get_env(name='SUPERAPP_BACKEND_JWT_SECRET') }}"
+    expiration: {{ get_env(name="SUPERAPP_BACKEND_JWT_EXPIRATION_SECS", default="604800") }}
+
+# Application-specific settings (free-form, read via `ctx.config.settings`).
+settings:
+  # Dependencies probed by the `/ready` readiness endpoint (TR-03-006).
+  readiness:
+    redis: "{{ get_env(name='SUPERAPP_BACKEND_REDIS_HOST') }}:{{ get_env(name='SUPERAPP_BACKEND_REDIS_PORT', default='6379') }}"
+    kafka: "{{ get_env(name='SUPERAPP_BACKEND_KAFKA_HOST') }}:{{ get_env(name='SUPERAPP_BACKEND_KAFKA_PORT', default='9092') }}"
+
+  # P4 auth: OIDC/Rauthy RP settings, token TTLs, refresh-token Redis store.
+  auth:
+    oidc:
+      issuer_url: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_ISSUER_URL') }}"
+      client_id: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_CLIENT_ID') }}"
+      client_secret: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_CLIENT_SECRET') }}"
+      redirect_url: "{{ get_env(name='SUPERAPP_BACKEND_OIDC_REDIRECT_URL') }}"
+    access_token_ttl_secs: {{ get_env(name="SUPERAPP_BACKEND_ACCESS_TTL_SECS", default="900") }}
+    refresh_token_ttl_secs: {{ get_env(name="SUPERAPP_BACKEND_REFRESH_TTL_SECS", default="2592000") }}
+    redis_url: "{{ get_env(name='SUPERAPP_BACKEND_REDIS_URL') }}"
+
+  # P5/P9 module system. `registry_host` is the self-hosted private OCI
+  # registry (TR-09-009/TR-10-006) modules are resolved from — never a public
+  # registry. `trusted_signers` holds *public* keys (not secrets); add real
+  # entries directly to the copied `config/production.yaml` as they're
+  # provisioned (same shape as `config/test.yaml`'s fixture entry).
+  modules:
+    registry_host: "{{ get_env(name='SUPERAPP_BACKEND_MODULE_REGISTRY_HOST') }}"
+    trusted_signers: []
