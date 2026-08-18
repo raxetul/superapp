@@ -14,5 +14,5 @@ This file drives the bottom tmux phase strip (see `~/.claude/scripts/agentic-pha
 - [x] Real-time & messaging (HTTP2 SSE event stream, Kafka topics & consumers)
 - [x] Frontend core (React + ShadCN, auth flows, role-based routing, module host)
 - [x] Mobile core (React Native + Tamagui, auth, navigation, module host)
-- [ ] Module SDK & reference module (cross-platform contracts, sample end-to-end module)
+- [x] Module SDK & reference module (cross-platform contracts, sample end-to-end module)
 - [ ] Testing, Docker & deployment (coverage gates, multi-stage builds, compose orchestration)
