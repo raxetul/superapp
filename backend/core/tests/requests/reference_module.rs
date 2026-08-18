@@ -102,7 +102,7 @@ async fn reference_module_registers_via_the_real_manifest() {
         let res = request
             .post("/api/v1/modules/register")
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&serde_json::to_string(&manifest).unwrap())
+            .text(serde_json::to_string(&manifest).unwrap())
             .await;
         assert_eq!(res.status_code(), 200, "body: {}", res.text());
         let body: serde_json::Value = res.json();
