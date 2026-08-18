@@ -321,7 +321,10 @@ mod tests {
 
     #[test]
     fn blank_env_value_falls_back_to_loopback() {
-        assert_eq!(DockerRuntime::with_host(Some("   ".to_string())).host, "127.0.0.1");
+        assert_eq!(
+            DockerRuntime::with_host(Some("   ".to_string())).host,
+            "127.0.0.1"
+        );
     }
 
     #[test]
@@ -334,7 +337,10 @@ mod tests {
 
     #[test]
     fn no_network_by_default() {
-        assert_eq!(DockerRuntime::with_host_and_network(None, None).network, None);
+        assert_eq!(
+            DockerRuntime::with_host_and_network(None, None).network,
+            None
+        );
     }
 
     #[test]
