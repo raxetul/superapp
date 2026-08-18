@@ -26,6 +26,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 RUN cargo build --release --bin core-cli --locked
 
+# The `docker` CLI client only (no dockerd) — copied from Docker's own
+# minimal `cli` image rather than the Debian `docker.io` package, which drags
+# in the full engine. Needed so DockerRuntime (modules::runtime, TR-05-001)
+# can shell out to start module containers when the core itself runs
+# containerized (TR-10-005); a deployment that mounts /var/run/docker.sock
+# into this container is what makes that binary useful — see
+# docs/phases/p10-testing-docker-deploy.md for the security tradeoff that
+# mount implies and why it's opted into per-deployment, not baked in here.
+FROM docker:26-cli AS dockercli
+
 # --- Runtime: minimal image, no build toolchain (TR-10-003 accept) ---
 FROM debian:bookworm-slim AS runtime
 
@@ -41,6 +51,7 @@ COPY --from=builder /build/target/release/core-cli ./core-cli
 # baked in outside #[cfg(test)]) — both must sit next to the binary here.
 COPY --from=builder /build/config ./config
 COPY --from=builder /build/authz ./authz
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 
 USER superapp
 ENV LOCO_ENV=production

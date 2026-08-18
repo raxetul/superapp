@@ -1,0 +1,17 @@
+# SuperApp — dev overlay for docker-compose.app.yml (TR-10-007).
+# `docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml up -d --build`
+#
+# Looser/dev-shaped defaults: verbose logging, source maps, ports exposed on
+# all interfaces for convenience. No secrets here — SUPERAPP_BACKEND_JWT_SECRET
+# still comes from .env (the base file has no default for it on purpose).
+
+services:
+  backend:
+    environment:
+      LOCO_ENV: development
+      RUST_LOG: ${RUST_LOG:-debug}
+
+  frontend:
+    build:
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5150}

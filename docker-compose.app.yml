@@ -1,0 +1,110 @@
+# SuperApp — application deployment stack (TR-10-005).
+#
+# Orchestrates the backend gateway + frontend, attached to the existing
+# `superapp` infra network created by the root `docker-compose.yml` (the P2
+# stack informally called "helvetia-compose" in project.md/REQUIREMENTS.md —
+# see docs/phases/p10-testing-docker-deploy.md's design-decisions section for
+# why "the helvetia-compose network" and the literal `superapp` Docker
+# network are the same thing here). No PostgreSQL/Redis/Kafka/Prometheus/
+# Grafana service is redefined in this file.
+#
+# Start the infra stack first, then this one:
+#   docker compose up -d                                  # infra (P2)
+#   docker compose -f docker-compose.app.yml up -d --build # this file
+#
+# Env-specific overlay (TR-10-007), selected explicitly rather than by a
+# magic default so a prod deploy can't happen by accident:
+#   docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml  up -d --build
+#   docker compose -f docker-compose.app.yml -f docker-compose.app.prod.yml up -d --build
+#
+# Registered module containers (e.g. the reference module, TR-09-007) are
+# NOT declared here as static services — the backend's `ContainerRuntime`
+# (`modules::runtime::DockerRuntime`, TR-05-001) starts/stops them itself via
+# `docker run`/`docker rm` against the same Docker host, in response to
+# `POST /api/v1/modules/register`. This file gives the backend container what
+# that needs: the host's Docker socket + a `docker` CLI (baked into
+# backend/core/Dockerfile), `SUPERAPP_BACKEND_MODULE_NETWORK=superapp` so
+# started module containers land on this same network, and
+# `SUPERAPP_BACKEND_MODULE_HOST=host.docker.internal` so their `-P`-published
+# ports are reachable from inside the backend's own network namespace (both
+# consumed by `modules::runtime::DockerRuntime::from_env`).
+#
+# Mounting the Docker socket grants the backend container root-equivalent
+# control over the host — accepted here as the pragmatic cost of P5's
+# existing docker-CLI-shell-out runtime model (rewriting it to talk to the
+# Docker Engine API over a scoped/TLS socket, or to a separate
+# orchestrator sidecar, is future hardening — see the phase doc). `user:
+# root` below is deliberate for that reason: the image's default `superapp`
+# user has no useful additional isolation once the socket is mounted, and
+# would only lack permission to use it.
+
+name: superapp-app
+
+networks:
+  superapp:
+    name: ${SUPERAPP_INFRA_NETWORK:-superapp}
+    external: true
+
+services:
+  backend:
+    build:
+      context: backend/core
+      dockerfile: Dockerfile
+    image: superapp-backend:${SUPERAPP_VERSION:-dev}
+    container_name: superapp-backend
+    user: root
+    environment:
+      LOCO_ENV: ${SUPERAPP_ENV:-production}
+      SUPERAPP_BACKEND_PORT: ${SUPERAPP_BACKEND_PORT:-5150}
+      SUPERAPP_BACKEND_DATABASE_URL: ${SUPERAPP_BACKEND_DATABASE_URL:-postgres://superapp:superapp@superapp-postgres:5432/superapp}
+      SUPERAPP_BACKEND_REDIS_URL: ${SUPERAPP_BACKEND_REDIS_URL:-redis://superapp-redis:6379}
+      SUPERAPP_BACKEND_REDIS_HOST: superapp-redis
+      SUPERAPP_BACKEND_REDIS_PORT: "6379"
+      SUPERAPP_BACKEND_KAFKA_HOST: superapp-kafka
+      SUPERAPP_BACKEND_KAFKA_PORT: "9092"
+      SUPERAPP_BACKEND_OIDC_ISSUER_URL: ${SUPERAPP_BACKEND_OIDC_ISSUER_URL:-}
+      SUPERAPP_BACKEND_OIDC_CLIENT_ID: ${SUPERAPP_BACKEND_OIDC_CLIENT_ID:-superapp}
+      SUPERAPP_BACKEND_OIDC_CLIENT_SECRET: ${SUPERAPP_BACKEND_OIDC_CLIENT_SECRET:-}
+      SUPERAPP_BACKEND_OIDC_REDIRECT_URL: ${SUPERAPP_BACKEND_OIDC_REDIRECT_URL:-}
+      SUPERAPP_BACKEND_MODULE_REGISTRY_HOST: ${SUPERAPP_BACKEND_MODULE_REGISTRY_HOST:-}
+      SUPERAPP_BACKEND_MODULE_HOST: host.docker.internal
+      SUPERAPP_BACKEND_MODULE_NETWORK: ${SUPERAPP_INFRA_NETWORK:-superapp}
+    ports:
+      - "${SUPERAPP_BACKEND_PORT:-5150}:5150"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [superapp]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5150/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: frontend/core
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5150}
+        VITE_OIDC_ISSUER: ${VITE_OIDC_ISSUER:-http://localhost:8080/auth/v1}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-superapp-web}
+        VITE_OIDC_REDIRECT_URI: ${VITE_OIDC_REDIRECT_URI:-http://localhost:5173/auth/callback}
+        VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-openid profile email}
+        VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${VITE_OIDC_POST_LOGOUT_REDIRECT_URI:-http://localhost:5173/}
+    image: superapp-frontend:${SUPERAPP_VERSION:-dev}
+    container_name: superapp-frontend
+    ports:
+      - "${SUPERAPP_FRONTEND_PORT:-8081}:8080"
+    networks: [superapp]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
