@@ -55,7 +55,7 @@ different literal network name is ever wired in instead.
 
 | Requirement | Summary | Design / where | Proving tests / validation |
 |---|---|---|---|
-| **TR-10-001** | Root CI pipeline (GitHub Actions) | `.github/workflows/ci.yml` — `commitlint`, `backend`/`frontend`/`mobile`/`tooling` matrix jobs, `deploy-artifacts`, gated by `ci-ok`; replaces the unreachable `backend/core/.github/workflows/ci.yaml` scaffold (GitHub only reads workflows at the repo root) | `tests/test-deploy.sh` (`[TR-10-001]`, static shape checks); `python3 -c "import yaml; yaml.safe_load(...)"` (valid YAML, verified); the jobs' own commands (`cargo fmt/clippy/test`, `npm run lint/typecheck/test`) were run directly in this environment — see the rows below |
+| **TR-10-001** | Root CI pipeline (GitHub Actions) | `.github/workflows/ci.yml` — `commitlint`, `backend`/`frontend`/`mobile`/`tooling` matrix jobs, `deploy-artifacts`, gated by `ci-ok`; replaces the unreachable `backend/core/.github/workflows/ci.yaml` scaffold (GitHub only reads workflows at the repo root) | `tests/test-deploy.sh` (`[TR-10-001]`, static shape checks); `python3 -c "import yaml; yaml.safe_load(...)"` (valid YAML, verified); every job's own command was run directly in this environment for all three backend crates, all six frontend/mobile packages, and the three tooling packages — all green (see Notes for the clippy debt this surfaced and fixed) |
 | **TR-10-002** | Coverage gates (80% critical-path) | `backend/core`: `cargo-llvm-cov --fail-under-lines 80` (CI job); `frontend/core`: `vite.config.ts` `test.coverage.thresholds` (v8 provider) + `npm run test:coverage`; `mobile/core`: `jest.config.js` `coverageThreshold` + `npm run test:coverage` | frontend/core: **84.36% lines** (`npm run test:coverage`, exit 0 — verified); mobile/core: **81.65% branches** / 88.33% stmts (`npm run test:coverage`, exit 0 — verified, after adding real `AdminScreen.test.tsx` cases that closed a genuine pre-existing gap, see Notes); backend/core: gate wired, `cargo-llvm-cov` itself cannot run in *this* shell (no `rustup`, so no `llvm-tools-preview` component — see Notes); `cargo test` (plain, no coverage) verified green instead |
 | **TR-10-003** | Multi-stage backend Dockerfile | `backend/core/Dockerfile` — `rust:1.85-slim-bookworm` builder → `debian:bookworm-slim` runtime (+ `docker` CLI copied from `docker:26-cli`, no build toolchain) | `docker compose -f docker-compose.app.yml config -q` (validates the build stanza, verified); `docker build` itself **deferred** (no daemon) |
 | **TR-10-004** | Multi-stage frontend Dockerfile | `frontend/core/Dockerfile` — `node:22-slim` builder (`vite build`, `VITE_*` build ARGs) → `nginxinc/nginx-unprivileged:1.27-alpine` runtime; `nginx.conf` (SPA fallback, asset caching) | same as TR-10-003; `docker build` **deferred** |
@@ -189,16 +189,30 @@ flowchart TB
   above: the `publish` job's registry-touching steps are skipped with a
   warning, not faked, until that repository variable + registry credentials
   exist.
-- **Backend test suite: what actually ran, for real.** `cd backend/core &&
-  cargo build --lib` completed clean (15m03s — this box compiles Rust
-  slowly from a cold `target/`; not a regression). `cargo fmt --all --
-  --check` — clean. `cargo clippy --all-targets --all-features -- -D
-  warnings` — clean (see the exact log referenced in the final report).
-  `cargo test --lib modules::runtime::` — **6/6 passed** (the new
-  `DockerRuntime`/`ModuleSpec` unit tests). The full suite (`node
+- **Backend test suite: what actually ran, for real, for all three crates.**
+  `backend/core`: `cargo build --lib` completed clean (15m03s on a cold
+  `target/` — this box compiles Rust slowly, not a regression); `cargo fmt
+  --all -- --check` clean; `cargo clippy --all-targets --all-features -- -D
+  warnings` clean (after the fixes above); full suite (`node
   testdb/server.mjs --host 127.0.0.1 --port 5432 &` + `cargo test --
   --test-threads=1`, live Redis on `:6379`) — **138/138 passed** (98 lib +
-  39 `tests/mod.rs` integration + 1 `module_packaging.rs`), exit code 0.
+  39 `tests/mod.rs` integration + 1 `module_packaging.rs`). `backend/sdk`:
+  fmt/clippy clean, `cargo test` — **17/17 passed**. `backend/modules/
+  reference`: fmt/clippy clean, `cargo test` — **3/3 passed**.
+- **`cargo clippy -D warnings` debt, surfaced and fixed, not silenced.**
+  Consolidating CI into a location GitHub actually runs is the *first* time
+  `-D warnings` has ever executed for real (the old scaffold used the same
+  flag but lived somewhere unreachable). It failed twice on genuine,
+  pre-existing findings — none introduced this phase: `messaging::
+  InMemoryBus`'s nested `Mutex<HashMap<(String,String), (Sender,Receiver)>>`
+  (`clippy::type_complexity`, fixed with a `GroupChannel` type alias, no
+  behavior change), `controllers::auth::require_oidc`'s `Problem`-sized
+  `Err` (`clippy::result_large_err`, `#[allow]`'d with a comment — boxing a
+  shared response type is a cross-cutting change out of scope here), and 7
+  needless `&`s on owned `String` temporaries in two integration test files
+  (`clippy::needless_borrows_for_generic_args`, mechanical fixes). All three
+  backend crates (`core`, `sdk`, `modules/reference`) are clippy-clean as of
+  this phase.
 - **Coverage-gate honesty, not gaming.** Wiring `mobile/core`'s gate at 80%
   first *failed* (79.91% branches) against real pre-existing code
   (`AdminScreen.tsx` at 33.33% branch coverage) — the threshold was not
