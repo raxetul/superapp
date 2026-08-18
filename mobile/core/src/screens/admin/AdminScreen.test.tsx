@@ -8,16 +8,28 @@ import { UiProviders } from '@/ui/providers';
 import { makeMemoryStore, testConfig } from '@/test-utils';
 import type { StoredTokens } from '@/auth/tokenStorage';
 
-async function renderAdmin() {
+async function renderAdmin(options?: { failAllowlistPost?: boolean }) {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];
   const fetchImpl = (async (url: string, init: RequestInit) => {
+    const method = init.method ?? 'GET';
     calls.push({
       url,
-      method: init.method ?? 'GET',
+      method,
       body: init.body ? JSON.parse(init.body as string) : undefined,
     });
+    if (
+      options?.failAllowlistPost &&
+      typeof url === 'string' &&
+      url.endsWith('/admin/allowlist') &&
+      method === 'POST'
+    ) {
+      return new Response(
+        JSON.stringify({ type: 'about:blank', title: 'Conflict', status: 409, detail: 'already allow-listed' }),
+        { status: 409, headers: { 'content-type': 'application/problem+json' } },
+      );
+    }
     const data =
-      typeof url === 'string' && url.endsWith('/admin/allowlist') && (init.method ?? 'GET') === 'GET'
+      typeof url === 'string' && url.endsWith('/admin/allowlist') && method === 'GET'
         ? [{ email: 'existing@company.com', role: 'user' }]
         : {};
     return new Response(JSON.stringify({ success: true, data }), {
@@ -75,5 +87,39 @@ describe('AdminScreen (FR-08-003)', () => {
       const put = calls.find((c) => c.method === 'PUT' && c.url.endsWith('/admin/users/role'));
       expect(put?.body).toEqual({ email: 'someone@company.com', role: 'admin' });
     });
+  });
+
+  it('demotes a user to the "user" role', async () => {
+    const { calls } = await renderAdmin();
+    await waitFor(() => expect(screen.getByTestId('role-email-input')).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByTestId('role-email-input'), 'someone@company.com');
+    await fireEvent.press(screen.getByTestId('make-user-button'));
+
+    await waitFor(() => {
+      const put = calls.find((c) => c.method === 'PUT' && c.url.endsWith('/admin/users/role'));
+      expect(put?.body).toEqual({ email: 'someone@company.com', role: 'user' });
+    });
+  });
+
+  it('surfaces an API error when adding an allow-list entry fails', async () => {
+    await renderAdmin({ failAllowlistPost: true });
+    await waitFor(() => expect(screen.getByTestId('allowlist-add-button')).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByTestId('allowlist-email-input'), 'dup@company.com');
+    await fireEvent.press(screen.getByTestId('allowlist-add-button'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('admin-error')).toHaveTextContent('already allow-listed'),
+    );
+  });
+
+  it('ignores an empty email when adding to the allow-list', async () => {
+    await renderAdmin();
+    await waitFor(() => expect(screen.getByTestId('allowlist-add-button')).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId('allowlist-add-button'));
+
+    expect(screen.queryByTestId('admin-error')).toBeNull();
   });
 });
