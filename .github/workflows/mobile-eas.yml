@@ -1,0 +1,61 @@
+# SuperApp — mobile build/release pipeline (TR-10-009).
+#
+# Produces distributable iOS + Android artifacts via Expo Application
+# Services (EAS Build). Requires an `EXPO_TOKEN` repository secret (an Expo
+# access token for the SuperApp Expo account/project) — not configurable
+# from this repo alone, so this workflow is validated for shape here (see
+# docs/phases/p10-testing-docker-deploy.md) but its actual run is deferred to
+# an environment that has that account/token.
+#
+# Manual dispatch picks a profile (mobile/core/eas.json); pushing a
+# `mobile-v*` tag always builds `production`.
+
+name: Mobile EAS Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "eas.json build profile"
+        required: true
+        default: preview
+        type: choice
+        options: [development, preview, production]
+  push:
+    tags:
+      - "mobile-v*"
+
+defaults:
+  run:
+    working-directory: mobile/core
+
+jobs:
+  eas-build:
+    name: EAS build (iOS + Android)
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/core/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck --if-present
+      - name: No EXPO_TOKEN configured
+        if: env.EXPO_TOKEN == ''
+        run: |
+          echo "::warning::EXPO_TOKEN repository secret is not set — skipping the EAS build (TR-10-009 deferred: no Expo/EAS account reachable from this repo yet)."
+      - uses: expo/expo-github-action@v8
+        if: env.EXPO_TOKEN != ''
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: EAS build — iOS + Android
+        if: env.EXPO_TOKEN != ''
+        run: |
+          PROFILE="${{ github.event.inputs.profile }}"
+          if [ -z "$PROFILE" ]; then PROFILE="production"; fi
+          eas build --platform all --non-interactive --no-wait --profile "$PROFILE"

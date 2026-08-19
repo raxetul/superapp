@@ -1,0 +1,9 @@
+{
+  "name": "@superapp/commitlint",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TR-10-008 Conventional Commits linter (check-commit-msg.mjs), used by the commit-msg git hook and CI. No dependencies — Node.js built-ins only.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

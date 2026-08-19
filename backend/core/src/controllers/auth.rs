@@ -168,7 +168,10 @@ async fn me(current: CurrentUser) -> Success<serde_json::Value> {
 }
 
 /// Require both an OIDC provider and a token validator to be wired.
-#[allow(clippy::type_complexity)]
+// `Problem` (P3/TR-03-003) is >=200 bytes; boxing it is a cross-cutting
+// change to the shared success/error response types, out of scope for a
+// CI-gate phase (P10) — pre-existing, not introduced here.
+#[allow(clippy::type_complexity, clippy::result_large_err)]
 fn require_oidc(
     state: &Arc<AuthState>,
 ) -> Result<

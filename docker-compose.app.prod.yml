@@ -1,0 +1,26 @@
+# SuperApp — prod overlay for docker-compose.app.yml (TR-10-007).
+# `docker compose -f docker-compose.app.yml -f docker-compose.app.prod.yml up -d --build`
+#
+# Requires SUPERAPP_BACKEND_JWT_SECRET in .env — the base file has no default
+# for it precisely so a `.env`-less run can't accidentally boot production
+# with a placeholder secret; this overlay is where that requirement is
+# actually enforced (dev doesn't need it — config/development.yaml carries
+# its own fixed non-secret dev value). Also requires
+# scripts/prepare-prod-config.sh to have materialized
+# backend/core/config/production.yaml from its .example template before
+# `--build` runs (the Dockerfile COPYs `config/` as-is from the build
+# context; it doesn't invoke that script itself, since it's a deploy-time
+# concern, not a build-time one).
+
+services:
+  backend:
+    environment:
+      LOCO_ENV: production
+      SUPERAPP_BACKEND_JWT_SECRET: ${SUPERAPP_BACKEND_JWT_SECRET:?set SUPERAPP_BACKEND_JWT_SECRET in .env for production}
+    restart: unless-stopped
+
+  frontend:
+    build:
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?set VITE_API_BASE_URL in .env for production}
+    restart: unless-stopped

@@ -1,0 +1,303 @@
+# SuperApp — root CI pipeline (TR-10-001).
+#
+# Consolidates the P3-scaffold workflow that lived (unreachable — GitHub only
+# reads .github/workflows/ at the repo root) at
+# backend/core/.github/workflows/ci.yaml: same fmt/clippy/test shape, extended
+# to every backend crate, every frontend/mobile package, the tooling scripts,
+# and Conventional Commits — see docs/phases/p10-testing-docker-deploy.md.
+#
+# Backend tests run against PGlite (an in-memory Postgres-wire-protocol
+# server, `testdb/server.mjs`), not a `postgres:` service container — see the
+# P3 phase doc's "Test DB" note and the memory-noted PGlite blocker; Redis is
+# a real service container. `--test-threads=1` is required for backend/core
+# (PGlite multiplexes one instance over N sockets — see testdb/server.mjs).
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.85.0" # pinned to backend/core's rust-version MSRV
+  NODE_VERSION: "22"
+
+jobs:
+  commitlint:
+    name: Conventional Commits (TR-10-008)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Lint commit subjects in range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          # A force-push or a new branch's first push reports an all-zero
+          # `before` SHA — nothing to diff against, so just check HEAD.
+          case "$RANGE" in
+            0000000000000000000000000000000000000000*) RANGE="${{ github.sha }}~1..${{ github.sha }}" ;;
+          esac
+          node scripts/commitlint/check-commit-msg.mjs --range "$RANGE"
+
+  backend:
+    name: "Backend: ${{ matrix.crate }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [backend/core, backend/sdk, backend/modules/reference]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy, llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.crate }}
+      - name: cargo fmt --check
+        working-directory: ${{ matrix.crate }}
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        working-directory: ${{ matrix.crate }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Start PGlite test-db
+        if: matrix.crate == 'backend/core'
+        working-directory: backend/core/testdb
+        run: |
+          npm ci
+          nohup node server.mjs --host 127.0.0.1 --port 5432 > /tmp/testdb.log 2>&1 &
+          for i in $(seq 1 30); do
+            (echo > /dev/tcp/127.0.0.1/5432) 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo "PGlite test-db did not open :5432 in time" >&2; cat /tmp/testdb.log >&2; exit 1
+      - name: cargo test
+        if: matrix.crate != 'backend/core'
+        working-directory: ${{ matrix.crate }}
+        run: cargo test --locked -- --test-threads=1
+      # TR-10-002: backend/core is the critical-path crate (auth, gateway,
+      # modules) — gated at 80% line coverage. backend/sdk and the reference
+      # module (sample/library code) run `cargo test` above without the gate.
+      - name: Install cargo-llvm-cov
+        if: matrix.crate == 'backend/core'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: cargo llvm-cov (test + 80% coverage gate)
+        if: matrix.crate == 'backend/core'
+        working-directory: backend/core
+        run: cargo llvm-cov --locked --fail-under-lines 80 --lcov --output-path lcov.info -- --test-threads=1
+
+  frontend:
+    name: "Frontend: ${{ matrix.pkg }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [frontend/core, frontend/sdk, frontend/modules/reference]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
+      - working-directory: ${{ matrix.pkg }}
+        run: npm ci
+      - working-directory: ${{ matrix.pkg }}
+        run: npm run lint --if-present
+      - working-directory: ${{ matrix.pkg }}
+        run: npm run typecheck --if-present
+      # TR-10-002: frontend/core is the critical-path package, gated at 80%
+      # coverage; the SDK/reference packages run `npm test` without the gate.
+      - name: Test
+        if: matrix.pkg != 'frontend/core'
+        working-directory: ${{ matrix.pkg }}
+        run: npm test
+      - name: Test + 80% coverage gate
+        if: matrix.pkg == 'frontend/core'
+        working-directory: ${{ matrix.pkg }}
+        run: npm run test:coverage
+
+  mobile:
+    name: "Mobile: ${{ matrix.pkg }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [mobile/core, mobile/sdk, mobile/modules/reference]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
+      - working-directory: ${{ matrix.pkg }}
+        run: npm ci
+      # mobile/core's reference.integration.test.ts imports mobile/modules/
+      # reference by relative path (no npm workspaces yet — see
+      # docs/phases/p9-module-sdk.md) — Babel's transform of that file needs
+      # its OWN node_modules/@babel/runtime, not mobile/core's.
+      - name: Install mobile/modules/reference (cross-package test import)
+        if: matrix.pkg == 'mobile/core'
+        working-directory: mobile/modules/reference
+        run: npm ci
+      - working-directory: ${{ matrix.pkg }}
+        run: npm run typecheck --if-present
+      # TR-10-002: mobile/core is the critical-path package, gated at 80%
+      # coverage; the SDK/reference packages run `npm test` without the gate.
+      - name: Test
+        if: matrix.pkg != 'mobile/core'
+        working-directory: ${{ matrix.pkg }}
+        run: npm test
+      - name: Test + 80% coverage gate
+        if: matrix.pkg == 'mobile/core'
+        working-directory: ${{ matrix.pkg }}
+        run: npm run test:coverage
+
+  tooling:
+    name: "Tooling: ${{ matrix.pkg }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [scripts/module-sdk, scripts/commitlint, scripts/deploy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - working-directory: ${{ matrix.pkg }}
+        run: npm test
+
+  deploy-artifacts:
+    name: Lint Dockerfiles / workflows / compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: reviewdog/action-actionlint@v1
+        with:
+          reporter: github-check
+          fail_level: error
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: backend/core/Dockerfile
+          failure-threshold: error
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: frontend/core/Dockerfile
+          failure-threshold: error
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: backend/modules/reference/Dockerfile
+          failure-threshold: error
+      - name: Validate compose files (no daemon required)
+        run: |
+          docker compose -f docker-compose.yml config -q
+          SUPERAPP_BACKEND_JWT_SECRET=ci-placeholder \
+            docker compose -f docker-compose.app.yml -f docker-compose.app.dev.yml config -q
+          SUPERAPP_BACKEND_JWT_SECRET=ci-placeholder VITE_API_BASE_URL=https://api.ci.invalid \
+            docker compose -f docker-compose.app.yml -f docker-compose.app.prod.yml config -q
+      - name: Static repo-level deploy checks (TR-10-*)
+        run: ./tests/test-deploy.sh
+
+  publish:
+    name: Publish images to private registry (TR-10-006 / TR-09-009)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend, mobile, tooling, deploy-artifacts]
+    # Never on a PR (forks shouldn't need/have registry credentials); only on
+    # a push to the default branches or a semver tag. `resolve_image_ref`
+    # (backend/core/src/modules/oci.rs) is what the core uses to pull a
+    # module back by name+version — the module tag below matches its
+    # `{host}/modules/{name}:{version}` shape exactly, or the publish would
+    # push an image the core could never resolve.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    env:
+      REGISTRY_HOST: ${{ vars.SUPERAPP_REGISTRY_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: "Derive image version (TR-00-001: tested in scripts/deploy)"
+        id: version
+        run: echo "value=$(node scripts/deploy/derive-version.mjs)" >> "$GITHUB_OUTPUT"
+      - name: Materialize production backend config (TR-10-007)
+        run: ./scripts/prepare-prod-config.sh
+      - name: No registry configured
+        if: env.REGISTRY_HOST == ''
+        run: |
+          echo "::warning::SUPERAPP_REGISTRY_HOST repository variable is not set — skipping image publication (TR-10-006 deferred: no self-hosted private registry reachable from this repo yet)."
+      - uses: docker/setup-buildx-action@v3
+        if: env.REGISTRY_HOST != ''
+      - name: Log in to the private registry
+        if: env.REGISTRY_HOST != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_HOST }}
+          username: ${{ secrets.SUPERAPP_REGISTRY_USERNAME }}
+          password: ${{ secrets.SUPERAPP_REGISTRY_PASSWORD }}
+      - name: Build + push backend image
+        if: env.REGISTRY_HOST != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: backend/core
+          push: true
+          tags: ${{ env.REGISTRY_HOST }}/superapp-backend:${{ steps.version.outputs.value }}
+      - name: Build + push frontend image
+        if: env.REGISTRY_HOST != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend/core
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+            VITE_OIDC_ISSUER=${{ vars.VITE_OIDC_ISSUER }}
+            VITE_OIDC_CLIENT_ID=${{ vars.VITE_OIDC_CLIENT_ID }}
+            VITE_OIDC_REDIRECT_URI=${{ vars.VITE_OIDC_REDIRECT_URI }}
+          tags: ${{ env.REGISTRY_HOST }}/superapp-frontend:${{ steps.version.outputs.value }}
+      - name: Build + push reference module image
+        if: env.REGISTRY_HOST != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/modules/reference/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_HOST }}/modules/reference:${{ steps.version.outputs.value }}
+
+  # Gate everything above into one required status check for branch protection.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [commitlint, backend, frontend, mobile, tooling, deploy-artifacts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "one or more jobs failed" >&2
+            exit 1
+          fi

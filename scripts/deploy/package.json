@@ -1,0 +1,9 @@
+{
+  "name": "@superapp/deploy-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TR-10-006 image version/tag derivation (derive-version.mjs), used by the CI publish job. No dependencies — Node.js built-ins only.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

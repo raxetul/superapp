@@ -74,17 +74,59 @@ pub trait ContainerRuntime: Send + Sync {
 // Docker daemon is available (deployment / P10).
 // ---------------------------------------------------------------------------
 
+/// Env var overriding the host a module's published port is reachable on
+/// (TR-10-005). Needed when the core itself runs inside a container on a
+/// bridge network: there, `127.0.0.1` (the default below) is the core's own
+/// network namespace, not the Docker host's, so a sibling module container's
+/// `docker run -P` published port is unreachable at that address. Deployment
+/// compose sets this to the Docker host's address as seen from the backend
+/// container; bare-metal/dev (core running directly on the Docker host)
+/// leaves it unset and keeps the loopback default.
+pub const MODULE_HOST_ENV: &str = "SUPERAPP_BACKEND_MODULE_HOST";
+
+/// Env var naming the Docker network started module containers should join
+/// (TR-10-005 — "module containers attached to the helvetia-compose
+/// network"). Unset (the default) leaves `docker run` on Docker's default
+/// bridge, matching prior behavior.
+pub const MODULE_NETWORK_ENV: &str = "SUPERAPP_BACKEND_MODULE_NETWORK";
+
 /// Runs modules as containers via the `docker` CLI.
 pub struct DockerRuntime {
     /// Host the mapped port is reachable on.
     host: String,
+    /// Docker network started module containers join, if any.
+    network: Option<String>,
+}
+
+impl DockerRuntime {
+    /// Build from [`MODULE_HOST_ENV`]/[`MODULE_NETWORK_ENV`], falling back to
+    /// the loopback host and Docker's default bridge network.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::with_host_and_network(
+            std::env::var(MODULE_HOST_ENV).ok(),
+            std::env::var(MODULE_NETWORK_ENV).ok(),
+        )
+    }
+
+    fn with_host_and_network(host: Option<String>, network: Option<String>) -> Self {
+        Self {
+            host: host
+                .filter(|h| !h.trim().is_empty())
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
+            network: network.filter(|n| !n.trim().is_empty()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_host(host: Option<String>) -> Self {
+        Self::with_host_and_network(host, None)
+    }
 }
 
 impl Default for DockerRuntime {
     fn default() -> Self {
-        Self {
-            host: "127.0.0.1".to_string(),
-        }
+        Self::with_host_and_network(None, None)
     }
 }
 
@@ -94,6 +136,9 @@ impl ContainerRuntime for DockerRuntime {
         use std::process::Command;
         let mut cmd = Command::new("docker");
         cmd.args(["run", "-d", "-P"]);
+        if let Some(network) = &self.network {
+            cmd.args(["--network", network]);
+        }
         for (k, v) in &spec.env {
             cmd.args(["-e", &format!("{k}={v}")]);
         }
@@ -262,5 +307,55 @@ impl ContainerRuntime for InProcessRuntime {
             server.task.abort();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_host_is_loopback() {
+        assert_eq!(DockerRuntime::with_host(None).host, "127.0.0.1");
+    }
+
+    #[test]
+    fn blank_env_value_falls_back_to_loopback() {
+        assert_eq!(
+            DockerRuntime::with_host(Some("   ".to_string())).host,
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn configured_host_is_used_verbatim() {
+        assert_eq!(
+            DockerRuntime::with_host(Some("gateway.internal".to_string())).host,
+            "gateway.internal"
+        );
+    }
+
+    #[test]
+    fn no_network_by_default() {
+        assert_eq!(
+            DockerRuntime::with_host_and_network(None, None).network,
+            None
+        );
+    }
+
+    #[test]
+    fn blank_network_is_treated_as_unset() {
+        assert_eq!(
+            DockerRuntime::with_host_and_network(None, Some("  ".to_string())).network,
+            None
+        );
+    }
+
+    #[test]
+    fn configured_network_is_used_verbatim() {
+        assert_eq!(
+            DockerRuntime::with_host_and_network(None, Some("superapp".to_string())).network,
+            Some("superapp".to_string())
+        );
     }
 }

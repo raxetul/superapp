@@ -121,20 +121,18 @@ impl Consumer {
     }
 }
 
+/// A group's shared MPMC channel (competing consumers within the group).
+type GroupChannel = (
+    async_channel::Sender<Message>,
+    async_channel::Receiver<Message>,
+);
+
 /// In-memory bus modelling topic fan-out to groups + competitive intra-group
 /// delivery.
 #[derive(Default)]
 pub struct InMemoryBus {
     // (topic, group) -> the group's shared MPMC channel.
-    groups: Mutex<
-        HashMap<
-            (String, String),
-            (
-                async_channel::Sender<Message>,
-                async_channel::Receiver<Message>,
-            ),
-        >,
-    >,
+    groups: Mutex<HashMap<(String, String), GroupChannel>>,
 }
 
 impl InMemoryBus {

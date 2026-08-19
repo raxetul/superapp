@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# TR-10-008 — Conventional Commits `commit-msg` hook.
+# Installed via `make hooks` (sets core.hooksPath to scripts/hooks).
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+exec node "$ROOT/scripts/commitlint/check-commit-msg.mjs" "$1"

@@ -112,8 +112,10 @@ impl AuthState {
         let trust = Arc::new(trust);
 
         // Module runtime + gateway. Docker in production; the gateway enforces
-        // Cedar before proxying (TR-05-007).
-        let registry = Arc::new(ModuleRegistry::new(Arc::new(DockerRuntime::default())));
+        // Cedar before proxying (TR-05-007). `from_env()` (TR-10-005) lets
+        // deployment override the loopback default when the core itself runs
+        // in a container (see runtime::MODULE_HOST_ENV).
+        let registry = Arc::new(ModuleRegistry::new(Arc::new(DockerRuntime::from_env())));
         let gateway = Arc::new(Gateway::new(registry.clone(), enforcer.clone()));
 
         // Access-token validator: static JWKS first, else OIDC discovery.

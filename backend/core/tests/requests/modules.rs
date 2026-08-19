@@ -66,7 +66,7 @@ async fn register_rejects_invalid_manifest_with_422() {
         let res = request
             .post("/api/v1/modules/register")
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&serde_json::to_string(&m).unwrap())
+            .text(serde_json::to_string(&m).unwrap())
             .await;
         assert_eq!(res.status_code(), 422);
         assert_eq!(res.content_type(), "application/problem+json");
@@ -97,7 +97,7 @@ async fn register_rejects_untrusted_signature_with_403() {
         let res = request
             .post("/api/v1/modules/register")
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&serde_json::to_string(&m).unwrap())
+            .text(serde_json::to_string(&m).unwrap())
             .await;
         assert_eq!(res.status_code(), 403);
     })
@@ -112,7 +112,7 @@ async fn register_requires_admin() {
         let res = request
             .post("/api/v1/modules/register")
             .add_header("authorization", &support::bearer("bob@example.com"))
-            .text(&support::signed_manifest_json("billing", "1.0.0"))
+            .text(support::signed_manifest_json("billing", "1.0.0"))
             .await;
         assert_eq!(res.status_code(), 403);
     })
@@ -127,7 +127,7 @@ async fn config_validated_against_schema() {
         let reg = request
             .post("/api/v1/modules/register")
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&support::signed_manifest_json("billing", "1.0.0"))
+            .text(support::signed_manifest_json("billing", "1.0.0"))
             .await;
         let id = reg.json::<Value>()["data"]["id"]
             .as_str()
@@ -138,7 +138,7 @@ async fn config_validated_against_schema() {
         let ok = request
             .put(&format!("/api/v1/modules/{id}/config"))
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&json!({ "currency": "EUR" }).to_string())
+            .text(json!({ "currency": "EUR" }).to_string())
             .await;
         assert_eq!(ok.status_code(), 200, "body: {}", ok.text());
 
@@ -146,7 +146,7 @@ async fn config_validated_against_schema() {
         let bad = request
             .put(&format!("/api/v1/modules/{id}/config"))
             .add_header("authorization", &support::bearer("boss@example.com"))
-            .text(&json!({ "nope": 1 }).to_string())
+            .text(json!({ "nope": 1 }).to_string())
             .await;
         assert_eq!(bad.status_code(), 422);
     })

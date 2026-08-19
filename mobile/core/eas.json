@@ -1,0 +1,41 @@
+{
+  "cli": {
+    "version": ">= 13.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "http://localhost:5150",
+        "EXPO_PUBLIC_OIDC_ISSUER": "http://localhost:8080/auth/v1",
+        "EXPO_PUBLIC_OIDC_CLIENT_ID": "superapp-mobile-dev",
+        "EXPO_PUBLIC_OIDC_SCHEME": "superapp"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://staging-api.superapp.example.com",
+        "EXPO_PUBLIC_OIDC_ISSUER": "https://staging-idp.superapp.example.com",
+        "EXPO_PUBLIC_OIDC_CLIENT_ID": "superapp-mobile-preview",
+        "EXPO_PUBLIC_OIDC_SCHEME": "superapp"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.superapp.example.com",
+        "EXPO_PUBLIC_OIDC_ISSUER": "https://idp.superapp.example.com",
+        "EXPO_PUBLIC_OIDC_CLIENT_ID": "superapp-mobile",
+        "EXPO_PUBLIC_OIDC_SCHEME": "superapp"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
