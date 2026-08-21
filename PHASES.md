@@ -15,4 +15,4 @@ This file drives the bottom tmux phase strip (see `~/.claude/scripts/agentic-pha
 - [x] Frontend core (React + ShadCN, auth flows, role-based routing, module host)
 - [x] Mobile core (React Native + Tamagui, auth, navigation, module host)
 - [x] Module SDK & reference module (cross-platform contracts, sample end-to-end module)
-- [ ] Testing, Docker & deployment (coverage gates, multi-stage builds, compose orchestration)
+- [x] Testing, Docker & deployment (coverage gates, multi-stage builds, compose orchestration)
